@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_pharmacist
-from backend.crypto import get_crypto
+from backend.crypto import DecryptionError, get_crypto
 from backend.database import get_db
 from backend.models import Patient
 from backend.schemas import PatientCreate, PatientOut, PatientSearch
@@ -94,6 +94,30 @@ def search_patients(db: Session, query: str) -> list[Patient]:
         condition = Patient.cpf_index == crypto.blind_index(CPF_INDEX_PURPOSE, cpf_digits)
     patients = db.scalars(select(Patient).where(condition).limit(SEARCH_LIMIT)).all()
     return sorted(patients, key=lambda p: normalize_name(p.full_name))
+
+
+def verify_keys_match_existing_data(db: Session) -> None:
+    """Refuse to run with keys that do not belong to the existing database.
+
+    A different encryption key would make stored data unreadable (and new rows
+    would be encrypted with the new key, mixing keys in one database); a
+    different blind-index key would silently break search and duplicate-CPF
+    detection. Checked once at startup against the first stored patient.
+    """
+    try:
+        patient = db.scalar(select(Patient).order_by(Patient.id).limit(1))
+    except DecryptionError:
+        raise RuntimeError(
+            "PHARMATECH_DATA_ENCRYPTION_KEY does not match the existing database. "
+            "Restore the original key; do not replace keys on a database with data."
+        ) from None
+    if patient is None:
+        return
+    if get_crypto().blind_index(CPF_INDEX_PURPOSE, patient.cpf) != patient.cpf_index:
+        raise RuntimeError(
+            "PHARMATECH_BLIND_INDEX_KEY does not match the existing database. "
+            "Restore the original key; do not replace keys on a database with data."
+        )
 
 
 router = APIRouter(

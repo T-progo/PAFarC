@@ -1,0 +1,4 @@
+# Development and test dependencies (not needed in production).
+-r requirements.txt
+pytest==8.4.2
+pypdf==6.19.0

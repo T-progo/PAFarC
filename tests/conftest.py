@@ -20,6 +20,15 @@ from backend.main import app  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def reset_login_attempts():
+    from backend import auth
+
+    auth._failed_logins.clear()
+    yield
+    auth._failed_logins.clear()
+
+
+@pytest.fixture(autouse=True)
 def fresh_db():
     assert Path(get_engine().url.database).parent == _TEST_DIR
     init_db()

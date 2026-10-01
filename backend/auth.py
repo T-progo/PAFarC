@@ -1,4 +1,6 @@
 import re
+import threading
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,6 +22,41 @@ from backend.security import (
 
 LOGIN_PATTERN = re.compile(r"^[a-z0-9._-]{3,50}$")
 MIN_PASSWORD_LENGTH = 8
+
+# Brute-force protection: after MAX_FAILED_LOGINS wrong passwords for one login
+# within LOCKOUT_SECONDS, further attempts for that login are refused until the
+# window passes. In-memory, so it assumes a single API process (see README).
+MAX_FAILED_LOGINS = 5
+LOCKOUT_SECONDS = 15 * 60
+_failed_logins: dict[str, list[float]] = {}
+_failed_logins_lock = threading.Lock()
+
+
+def _recent_failures(login: str, now: float) -> list[float]:
+    attempts = [t for t in _failed_logins.get(login, []) if now - t < LOCKOUT_SECONDS]
+    if attempts:
+        _failed_logins[login] = attempts
+    else:
+        _failed_logins.pop(login, None)
+    return attempts
+
+
+def is_login_locked(login: str) -> bool:
+    with _failed_logins_lock:
+        return len(_recent_failures(login, time.monotonic())) >= MAX_FAILED_LOGINS
+
+
+def record_failed_login(login: str) -> None:
+    with _failed_logins_lock:
+        now = time.monotonic()
+        for key in list(_failed_logins):  # drop stale entries so the dict stays small
+            _recent_failures(key, now)
+        _failed_logins.setdefault(login, []).append(now)
+
+
+def clear_failed_logins(login: str) -> None:
+    with _failed_logins_lock:
+        _failed_logins.pop(login, None)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
@@ -94,13 +131,21 @@ def login(
     form: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Annotated[Session, Depends(get_db)],
 ) -> Token:
+    login_key = normalize_login(form.username)
+    if is_login_locked(login_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Try again later.",
+        )
     pharmacist = authenticate_pharmacist(db, form.username, form.password)
     if pharmacist is None:
+        record_failed_login(login_key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid login or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    clear_failed_logins(login_key)
     if not pharmacist.active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive.")
     return Token(access_token=create_access_token(pharmacist.id))

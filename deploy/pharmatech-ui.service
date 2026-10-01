@@ -1,0 +1,18 @@
+# systemd unit for the PharmaTech Streamlit UI (example; adjust paths/user).
+[Unit]
+Description=PharmaTech UI (Streamlit)
+After=network.target pharmatech-api.service
+Requires=pharmatech-api.service
+
+[Service]
+User=pharmatech
+WorkingDirectory=/opt/pharmatech
+# The UI only needs the API address; it must NOT receive the encryption keys,
+# so it deliberately does not load the .env file.
+Environment=PHARMATECH_API_URL=http://127.0.0.1:8000
+ExecStart=/opt/pharmatech/.venv/bin/streamlit run frontend/app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
+Restart=on-failure
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

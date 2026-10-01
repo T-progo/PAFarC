@@ -1,15 +1,12 @@
-fastapi>=0.115,<1.0
-uvicorn>=0.30,<1.0
-sqlalchemy>=2.0,<3.0
-pydantic-settings>=2.4,<3.0
-bcrypt>=4.2,<6.0
-PyJWT>=2.9,<3.0
-python-multipart>=0.0.9
-cryptography>=43,<47
-streamlit>=1.40,<2.0
-httpx>=0.27,<1.0
-fpdf2>=2.8,<3.0
-
-# Tests
-pytest>=8.0,<9.0
-pypdf>=5.0,<7.0
+# Runtime dependencies (FastAPI backend + Streamlit UI), pinned to the tested versions.
+fastapi==0.142.2
+uvicorn==0.54.0
+sqlalchemy==2.1.1
+pydantic-settings==2.15.0
+bcrypt==5.0.0
+PyJWT==2.15.1
+python-multipart==0.0.32
+cryptography==46.0.7
+fpdf2==2.8.9
+streamlit==1.64.0
+httpx==0.28.1

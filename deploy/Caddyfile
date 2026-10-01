@@ -1,0 +1,13 @@
+# Caddy reverse proxy (example). Caddy obtains and renews the HTTPS certificate
+# automatically. Replace the domain; only ports 80/443 should be open publicly.
+pharmatech.example.com {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+	# Streamlit UI (includes its websocket). The FastAPI backend is NOT exposed.
+	reverse_proxy 127.0.0.1:8501
+}

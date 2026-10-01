@@ -4,6 +4,7 @@
 """
 
 import html
+import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -33,6 +34,8 @@ st.markdown(
     .pt-label { color: #9E9E9E; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
     .pt-value { color: #F2F2F2; font-size: 1.15rem; margin-bottom: 0.8rem; }
     .pt-muted { color: #9E9E9E; }
+    /* Dark text on the silver primary buttons (white-on-silver was unreadable). */
+    button[kind^="primary"], button[kind^="primary"] p { color: #121212 !important; font-weight: 600; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -43,6 +46,14 @@ st.markdown(
 
 def api() -> PharmaTechAPI:
     return PharmaTechAPI(token=st.session_state.get("token"))
+
+
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>~$])")
+
+
+def md(text: str) -> str:
+    """Escape user-entered text before it is placed inside Markdown."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", str(text))
 
 
 def format_cpf(digits: str) -> str:
@@ -72,6 +83,9 @@ def show_api_error(exc: ApiError) -> None:
 
 def open_patient(patient_id: int) -> None:
     st.session_state["patient_id"] = patient_id
+    # Clear the menu selection so both menu items respond to a click while a
+    # patient is open (a radio only reacts when its selection changes).
+    st.session_state["reset_nav"] = True
 
 
 def close_patient() -> None:
@@ -83,8 +97,40 @@ def open_consultation(consultation_id: int) -> None:
     st.session_state["consultation_id"] = consultation_id
 
 
+def soap_has_unsaved_changes() -> bool:
+    saved = st.session_state.get("soap_saved")
+    if not saved or saved["cid"] != st.session_state.get("consultation_id"):
+        return False
+    cid = saved["cid"]
+    return any(
+        str(st.session_state.get(f"soap_{cid}_{key}", value)).strip() != value.strip()
+        for key, value in saved["values"].items()
+    )
+
+
+def may_leave_consultation() -> bool:
+    """False (and a warning on the next render) the first time the user tries to
+    leave with unsaved SOAP text; True on a second attempt, i.e. discard."""
+    if not soap_has_unsaved_changes() or st.session_state.pop("unsaved_warned", False):
+        return True
+    st.session_state["unsaved_warned"] = True
+    return False
+
+
+def leave_consultation() -> None:
+    if may_leave_consultation():
+        close_consultation()
+
+
+def on_nav_change() -> None:
+    if may_leave_consultation():
+        close_patient()
+
+
 def close_consultation() -> None:
     st.session_state.pop("consultation_id", None)
+    st.session_state.pop("soap_saved", None)
+    st.session_state.pop("unsaved_warned", None)
     # Generated PDFs live only in session memory; drop them when leaving the consultation.
     for key in [k for k in st.session_state if str(k).startswith("doc_result_")]:
         del st.session_state[key]
@@ -95,6 +141,37 @@ def field(label: str, value: str) -> None:
         f'<div class="pt-label">{html.escape(label)}</div>'
         f'<div class="pt-value">{html.escape(value)}</div>',
         unsafe_allow_html=True,
+    )
+
+
+def unsaved_page_guard(active: bool) -> None:
+    """Ask the browser to confirm before closing/reloading the tab while SOAP has unsaved text."""
+    flag = "true" if active else "false"
+    st.html(
+        f"<script>window.__ptUnsaved = {flag};"
+        "if (!window.__ptGuard) {window.__ptGuard = true;"
+        "window.addEventListener('beforeunload', function (e) {"
+        "if (window.__ptUnsaved) {e.preventDefault(); e.returnValue = '';}});}</script>",
+        unsafe_allow_javascript=True,
+    )
+
+
+def install_app_metadata() -> None:
+    """Installable web-app (PWA) metadata: adds the manifest, theme colour and icon to <head>.
+    Nothing is cached: there is no service worker and no offline storage."""
+    st.html(
+        "<script>(function () {var h = document.head;"
+        "if (h.querySelector('link[rel=manifest]')) return;"
+        "function add(tag, attrs) {var e = document.createElement(tag);"
+        "for (var k in attrs) e.setAttribute(k, attrs[k]); h.appendChild(e);}"
+        "add('link', {rel: 'manifest', href: 'app/static/manifest.json'});"
+        "add('meta', {name: 'theme-color', content: '#121212'});"
+        "add('meta', {name: 'mobile-web-app-capable', content: 'yes'});"
+        "add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});"
+        "add('meta', {name: 'apple-mobile-web-app-title', content: 'PharmaTech'});"
+        "add('link', {rel: 'apple-touch-icon', href: 'app/static/apple-touch-icon.png'});"
+        "})();</script>",
+        unsafe_allow_javascript=True,
     )
 
 
@@ -119,7 +196,11 @@ def login_view() -> None:
                 token = PharmaTechAPI().login(login, password)
                 pharmacist = PharmaTechAPI(token=token).me()
             except ApiError as exc:
-                messages = {401: "Login ou senha inválidos.", 403: "Conta inativa. Procure a coordenação."}
+                messages = {
+                    401: "Login ou senha inválidos.",
+                    403: "Conta inativa. Procure a coordenação.",
+                    429: "Muitas tentativas de login. Aguarde 15 minutos e tente novamente.",
+                }
                 st.error(messages.get(exc.status_code, exc.detail))
                 return
             st.session_state["token"] = token
@@ -129,14 +210,18 @@ def login_view() -> None:
 
 def sidebar() -> None:
     pharmacist = st.session_state["pharmacist"]
+    if st.session_state.pop("reset_nav", False):
+        st.session_state["nav"] = None
     with st.sidebar:
         st.image(str(PAFARC_LOGO), width="stretch")
-        st.markdown(f"**{pharmacist['full_name']}**  \n{pharmacist['crf']}")
+        st.markdown(f"**{md(pharmacist['full_name'])}**  \n{md(pharmacist['crf'])}")
         st.divider()
-        st.radio("Menu", [NAV_SEARCH, NAV_REGISTER], key="nav", on_change=close_patient)
+        st.radio("Menu", [NAV_SEARCH, NAV_REGISTER], key="nav", on_change=on_nav_change)
         st.divider()
         if st.button("Sair", key="logout", width="stretch"):
-            logout("Sessão encerrada.")
+            if may_leave_consultation():
+                logout("Sessão encerrada.")
+            st.rerun()
 
 
 def search_view() -> None:
@@ -167,8 +252,8 @@ def search_view() -> None:
         with st.container(border=True):
             left, right = st.columns([5, 1])
             left.markdown(
-                f"**{patient['full_name']}**  \n"
-                f"Nascimento: {format_date(patient['date_of_birth'])} · CPF: {mask_cpf(patient['cpf'])}"
+                f"**{md(patient['full_name'])}**  \n"
+                f"Nascimento: {format_date(patient['date_of_birth'])} · CPF: {md(mask_cpf(patient['cpf']))}"
             )
             right.button("Abrir", key=f"open_{patient['id']}", on_click=open_patient, args=(patient["id"],))
 
@@ -211,7 +296,7 @@ def profile_view(patient_id: int) -> None:
     st.button("← Voltar", key="back", on_click=close_patient)
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
-    st.header(patient["full_name"])
+    st.header(md(patient["full_name"]))
     with st.container(border=True):
         st.subheader("Dados do paciente")
         col1, col2, col3 = st.columns(3)
@@ -250,7 +335,7 @@ def consultations_section(patient_id: int) -> None:
             left, right = st.columns([5, 1])
             left.markdown(
                 f"**{format_date(consultation['consultation_date'])}** · "
-                f"{pharmacist['full_name']} · {pharmacist['crf']}"
+                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])}"
             )
             right.button(
                 "Abrir",
@@ -286,9 +371,14 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
     pharmacist = consultation["pharmacist"]
     editable = pharmacist["id"] == st.session_state["pharmacist"]["id"]
 
-    st.button("← Voltar ao paciente", key="back_consultation", on_click=close_consultation)
+    st.button("← Voltar ao paciente", key="back_consultation", on_click=leave_consultation)
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
+    if st.session_state.get("unsaved_warned"):
+        st.warning(
+            "Há alterações não salvas no SOAP. Clique em “Salvar SOAP” para mantê-las, "
+            "ou repita a ação (Voltar, menu ou Sair) para descartá-las."
+        )
     st.header(f"Atendimento de {format_date(consultation['consultation_date'])}")
     with st.container(border=True):
         col1, col2, col3 = st.columns(3)
@@ -315,20 +405,31 @@ def soap_section(patient_id: int, consultation: dict, editable: bool) -> None:
             for key, label in SOAP_SECTIONS:
                 st.text_area(label, value=soap.get(key) or "—", disabled=True, height=120, key=f"soap_ro_{cid}_{key}")
             return
-        with st.form(f"soap_form_{cid}"):
-            values = {
-                key: st.text_area(label, value=soap.get(key, ""), height=140, key=f"soap_{cid}_{key}")
-                for key, label in SOAP_SECTIONS
-            }
-            submitted = st.form_submit_button("Salvar SOAP", type="primary")
-        if submitted:
+        # Not inside st.form, so edits reach the session as soon as a field loses
+        # focus; that lets the app tell saved from unsaved text.
+        saved = {key: soap.get(key) or "" for key, _ in SOAP_SECTIONS}
+        st.session_state["soap_saved"] = {"cid": cid, "values": saved}
+        values = {
+            key: st.text_area(label, value=saved[key], height=140, key=f"soap_{cid}_{key}")
+            for key, label in SOAP_SECTIONS
+        }
+        save_col, state_col = st.columns([1, 4])
+        if save_col.button("Salvar SOAP", type="primary", key=f"soap_save_{cid}"):
             try:
                 api().save_soap(patient_id, cid, values)
             except ApiError as exc:
                 show_api_error(exc)
                 return
+            st.session_state.pop("unsaved_warned", None)
             st.session_state["flash"] = "SOAP salvo com sucesso."
             st.rerun()
+        if soap_has_unsaved_changes():
+            state_col.markdown(":orange[● Alterações não salvas]")
+            unsaved_page_guard(True)
+        else:
+            if consultation["soap"] is not None:
+                state_col.markdown(":gray[✓ SOAP salvo]")
+            unsaved_page_guard(False)
 
 
 def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
@@ -347,9 +448,12 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
         if not editable:
             return
 
+        # The generation number is part of every exam widget key: bumping it after a
+        # successful add/edit/delete gives the browser fresh (empty/unselected) widgets.
+        gen = exam_widgets_generation(cid)
         st.markdown("**Adicionar resultado**")
-        with st.form(f"exam_add_{cid}"):
-            new_exam = exam_inputs(f"exam_new_{cid}", {})
+        with st.form(f"exam_add_{cid}_{gen}"):
+            new_exam = exam_inputs(f"exam_new_{cid}_{gen}", {})
             submitted = st.form_submit_button("Adicionar exame", type="primary")
         if submitted:
             save_exam(patient_id, cid, None, new_exam, "Exame adicionado.")
@@ -363,10 +467,18 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
                 index=None,
                 format_func=lambda i: f"{by_id[i]['exam_name']} — {by_id[i]['result']} {by_id[i]['unit']}".strip(),
                 placeholder="Selecione um resultado",
-                key=f"exam_select_{cid}",
+                key=f"exam_select_{cid}_{gen}",
             )
             if selected is not None:
-                edit_exam_form(patient_id, cid, by_id[selected])
+                edit_exam_form(patient_id, cid, by_id[selected], gen)
+
+
+def exam_widgets_generation(cid: int) -> int:
+    return st.session_state.setdefault(f"exam_gen_{cid}", 0)
+
+
+def reset_exam_widgets(cid: int) -> None:
+    st.session_state[f"exam_gen_{cid}"] = exam_widgets_generation(cid) + 1
 
 
 def exam_inputs(prefix: str, exam: dict) -> dict:
@@ -383,13 +495,13 @@ def exam_inputs(prefix: str, exam: dict) -> dict:
     return values
 
 
-def edit_exam_form(patient_id: int, cid: int, exam: dict) -> None:
-    with st.form(f"exam_edit_{cid}_{exam['id']}"):
-        values = exam_inputs(f"exam_edit_{exam['id']}", exam)
+def edit_exam_form(patient_id: int, cid: int, exam: dict, gen: int) -> None:
+    with st.form(f"exam_edit_{cid}_{exam['id']}_{gen}"):
+        values = exam_inputs(f"exam_edit_{exam['id']}_{gen}", exam)
         save_col, delete_col, confirm_col = st.columns([1, 1, 2])
         save = save_col.form_submit_button("Salvar alterações", type="primary")
         delete = delete_col.form_submit_button("Excluir exame")
-        confirmed = confirm_col.checkbox("Confirmar exclusão", key=f"exam_delete_confirm_{exam['id']}")
+        confirmed = confirm_col.checkbox("Confirmar exclusão", key=f"exam_delete_confirm_{exam['id']}_{gen}")
     if save:
         save_exam(patient_id, cid, exam["id"], values, "Resultado atualizado.")
     elif delete:
@@ -401,7 +513,7 @@ def edit_exam_form(patient_id: int, cid: int, exam: dict) -> None:
         except ApiError as exc:
             show_api_error(exc)
             return
-        del st.session_state[f"exam_select_{cid}"]
+        reset_exam_widgets(cid)
         st.session_state["flash"] = "Resultado excluído."
         st.rerun()
 
@@ -418,11 +530,7 @@ def save_exam(patient_id: int, cid: int, exam_id: int | None, values: dict, mess
     except ApiError as exc:
         show_api_error(exc)
         return
-    if exam_id is None:  # clear the add form only after a successful save
-        for key in [k for k in st.session_state if str(k).startswith(f"exam_new_{cid}_")]:
-            del st.session_state[key]
-    else:
-        del st.session_state[f"exam_select_{cid}"]
+    reset_exam_widgets(cid)  # only after a successful save, so failed input is kept
     st.session_state["flash"] = message
     st.rerun()
 
@@ -460,7 +568,7 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
             for doc in reversed(issued):
                 st.markdown(
                     f"- {ISSUED_LABELS.get(doc['document_type'], doc['document_type'])} · "
-                    f"{format_timestamp(doc['created_at'])} · {doc['pharmacist']['full_name']}"
+                    f"{format_timestamp(doc['created_at'])} · {md(doc['pharmacist']['full_name'])}"
                 )
         if not editable:
             if not issued:
@@ -476,8 +584,8 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
         )
         pharmacist = st.session_state["pharmacist"]
         st.caption(
-            f"Paciente: {patient['full_name']} · CPF {format_cpf(patient['cpf'])} — "
-            f"Farmacêutico(a): {pharmacist['full_name']} · {pharmacist['crf']} "
+            f"Paciente: {md(patient['full_name'])} · CPF {format_cpf(patient['cpf'])} — "
+            f"Farmacêutico(a): {md(pharmacist['full_name'])} · {md(pharmacist['crf'])} "
             "(preenchidos automaticamente no documento)"
         )
         if kind == DOC_PRESCRIPTION:
@@ -579,6 +687,8 @@ def referral_form(cid: int) -> dict | None:
 
 
 # --- main --------------------------------------------------------------------
+
+install_app_metadata()
 
 if "token" not in st.session_state:
     login_view()

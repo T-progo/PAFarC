@@ -1,0 +1,18 @@
+# systemd unit for the PharmaTech FastAPI backend (example; adjust paths/user).
+# The API listens on localhost only; only the Streamlit UI is exposed (via Caddy).
+[Unit]
+Description=PharmaTech API (FastAPI)
+After=network.target
+
+[Service]
+User=pharmatech
+WorkingDirectory=/opt/pharmatech
+# .env holds the secrets and PHARMATECH_DATABASE_URL (absolute path on persistent disk).
+EnvironmentFile=/opt/pharmatech/.env
+# Exactly one worker: SQLite + the in-memory login lockout assume a single process.
+ExecStart=/opt/pharmatech/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-server-header
+Restart=on-failure
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

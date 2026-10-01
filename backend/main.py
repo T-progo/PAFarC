@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from backend import auth, consultations, documents, patients
 from backend.config import get_settings
 from backend.crypto import get_crypto
-from backend.database import init_db
+from backend.database import get_sessionmaker, init_db
 
 APP_NAME = "PharmaTech"
 
@@ -19,6 +19,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     get_settings()  # fail fast on missing/invalid configuration
     get_crypto()  # fail fast on missing/invalid encryption keys
     init_db()
+    with get_sessionmaker()() as db:
+        patients.verify_keys_match_existing_data(db)  # fail fast on keys from another database
     yield
 
 
