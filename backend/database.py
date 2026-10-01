@@ -2,7 +2,7 @@ import sqlite3
 from collections.abc import Iterator
 from functools import lru_cache
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from backend.config import get_settings
@@ -45,4 +45,25 @@ def get_db() -> Iterator[Session]:
 def init_db() -> None:
     import backend.models  # noqa: F401  (register models on Base.metadata)
 
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
+
+
+# Columns added after the first release. create_all() creates new tables but does not
+# alter existing ones, so these are added in place (no data is changed).
+_ADDED_COLUMNS = {
+    "generated_documents": {"pdf_encrypted": "BLOB", "pdf_size": "INTEGER"},
+}
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    existing_tables = set(inspect(engine).get_table_names())
+    with engine.begin() as connection:
+        for table, columns in _ADDED_COLUMNS.items():
+            if table not in existing_tables:
+                continue
+            present = {c["name"] for c in inspect(connection).get_columns(table)}
+            for name, sql_type in columns.items():
+                if name not in present:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))

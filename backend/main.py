@@ -21,6 +21,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     init_db()
     with get_sessionmaker()() as db:
         patients.verify_keys_match_existing_data(db)  # fail fast on keys from another database
+        patients.backfill_name_tokens(db)  # partial-search tokens for older records
     yield
 
 

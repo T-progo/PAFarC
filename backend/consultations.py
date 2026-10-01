@@ -14,6 +14,7 @@ from backend.schemas import (
     ConsultationSummary,
     ExamResultIn,
     ExamResultOut,
+    PreviousExamGroup,
     SoapIn,
     SoapOut,
 )
@@ -110,6 +111,34 @@ def get_consultation(
     patient_id: int, consultation_id: int, db: DB, _pharmacist: CurrentPharmacist
 ) -> Consultation:
     return _get_consultation(db, patient_id, consultation_id)
+
+
+@router.get("/{consultation_id}/previous-exams", response_model=list[PreviousExamGroup])
+def previous_exams(
+    patient_id: int, consultation_id: int, db: DB, _pharmacist: CurrentPharmacist
+) -> list[dict]:
+    """Exam results of this patient's earlier consultations, newest first (read-only)."""
+    current = _get_consultation(db, patient_id, consultation_id)
+    current_key = (current.consultation_date, current.created_at, current.id)
+    earlier = db.scalars(
+        select(Consultation)
+        .where(Consultation.patient_id == patient_id, Consultation.id != current.id)
+        .order_by(
+            Consultation.consultation_date.desc(),
+            Consultation.created_at.desc(),
+            Consultation.id.desc(),
+        )
+    ).all()
+    return [
+        {
+            "consultation_id": c.id,
+            "consultation_date": c.consultation_date,
+            "pharmacist": c.pharmacist,
+            "exam_results": c.exam_results,
+        }
+        for c in earlier
+        if (c.consultation_date, c.created_at, c.id) < current_key and c.exam_results
+    ]
 
 
 @router.put("/{consultation_id}/soap", response_model=SoapOut)

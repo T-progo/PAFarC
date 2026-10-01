@@ -391,18 +391,26 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
     if not editable:
         st.info("Somente leitura: este atendimento foi registrado por outro farmacêutico.")
 
-    soap_section(patient_id, consultation, editable)
-    exams_section(patient_id, consultation, editable)
+    def exams_after_objective() -> None:
+        exams_section(patient_id, consultation, editable)
+        previous_exams_section(patient_id, consultation["id"])
+
+    soap_section(patient_id, consultation, editable, exams_after_objective)
     documents_section(patient_id, patient, consultation, editable)
 
 
-def soap_section(patient_id: int, consultation: dict, editable: bool) -> None:
+def soap_section(patient_id: int, consultation: dict, editable: bool, after_objective) -> None:
+    """SOAP fields; `after_objective` renders what goes between Objetivo and Avaliação."""
     cid = consultation["id"]
     soap = consultation["soap"] or {}
+    upper, lower = SOAP_SECTIONS[:2], SOAP_SECTIONS[2:]  # (Subjetivo, Objetivo) / (Avaliação, Plano)
     with st.container(border=True):
         st.subheader("SOAP")
         if not editable:
-            for key, label in SOAP_SECTIONS:
+            for key, label in upper:
+                st.text_area(label, value=soap.get(key) or "—", disabled=True, height=120, key=f"soap_ro_{cid}_{key}")
+            after_objective()
+            for key, label in lower:
                 st.text_area(label, value=soap.get(key) or "—", disabled=True, height=120, key=f"soap_ro_{cid}_{key}")
             return
         # Not inside st.form, so edits reach the session as soon as a field loses
@@ -411,8 +419,13 @@ def soap_section(patient_id: int, consultation: dict, editable: bool) -> None:
         st.session_state["soap_saved"] = {"cid": cid, "values": saved}
         values = {
             key: st.text_area(label, value=saved[key], height=140, key=f"soap_{cid}_{key}")
-            for key, label in SOAP_SECTIONS
+            for key, label in upper
         }
+        after_objective()
+        values.update({
+            key: st.text_area(label, value=saved[key], height=140, key=f"soap_{cid}_{key}")
+            for key, label in lower
+        })
         save_col, state_col = st.columns([1, 4])
         if save_col.button("Salvar SOAP", type="primary", key=f"soap_save_{cid}"):
             try:
@@ -436,7 +449,7 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
     cid = consultation["id"]
     exams = consultation["exam_results"]
     with st.container(border=True):
-        st.subheader("Resultados de exames")
+        st.subheader("Resultados de exames deste atendimento")
         if exams:
             st.dataframe(
                 [{label: exam[key] for key, label in EXAM_COLUMNS} for exam in exams],
@@ -471,6 +484,31 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
             )
             if selected is not None:
                 edit_exam_form(patient_id, cid, by_id[selected], gen)
+
+
+def previous_exams_section(patient_id: int, cid: int) -> None:
+    """Read-only exam results of this patient's earlier consultations, for comparison."""
+    try:
+        groups = api().previous_exams(patient_id, cid)
+    except ApiError as exc:
+        show_api_error(exc)
+        return
+    with st.container(border=True):
+        st.subheader("Exames anteriores")
+        if not groups:
+            st.markdown('<p class="pt-muted">Nenhum exame em atendimentos anteriores.</p>', unsafe_allow_html=True)
+            return
+        st.caption("Somente leitura: resultados registrados em atendimentos anteriores deste paciente.")
+        for index, group in enumerate(groups):
+            pharmacist = group["pharmacist"]
+            title = (f"{format_date(group['consultation_date'])} · {pharmacist['full_name']} · "
+                     f"{pharmacist['crf']} · {len(group['exam_results'])} exame(s)")
+            with st.expander(title, expanded=index == 0):
+                st.dataframe(
+                    [{label: exam[key] for key, label in EXAM_COLUMNS} for exam in group["exam_results"]],
+                    hide_index=True,
+                    width="stretch",
+                )
 
 
 def exam_widgets_generation(cid: int) -> int:
@@ -548,6 +586,11 @@ ISSUED_LABELS = {
     "exam_request": "Solicitação de Exames Laboratoriais",
     "referral": "Encaminhamento / Interconsulta",
 }
+REPRINT_FILE_PREFIXES = {
+    "prescription": "prescricao-plano-de-cuidado",
+    "exam_request": "solicitacao-de-exames",
+    "referral": "encaminhamento-interconsulta",
+}
 MAX_PRESCRIPTION_ITEMS = 15
 
 
@@ -565,11 +608,27 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
         issued = consultation.get("documents", [])
         if issued:
             st.markdown("**Documentos emitidos**")
+            token = st.session_state.get("token")
             for doc in reversed(issued):
-                st.markdown(
-                    f"- {ISSUED_LABELS.get(doc['document_type'], doc['document_type'])} · "
+                left, right = st.columns([5, 1])
+                left.markdown(
+                    f"{ISSUED_LABELS.get(doc['document_type'], doc['document_type'])} · "
                     f"{format_timestamp(doc['created_at'])} · {md(doc['pharmacist']['full_name'])}"
                 )
+                if doc["reprintable"]:
+                    prefix = REPRINT_FILE_PREFIXES.get(doc["document_type"], "documento")
+                    right.download_button(
+                        "Reimprimir",
+                        # Fetched only when clicked: the stored PDF exactly as issued.
+                        data=lambda doc_id=doc["id"]: PharmaTechAPI(token=token).reprint_document(
+                            patient_id, cid, doc_id),
+                        file_name=f"{prefix}-atendimento-{cid}-{doc['id']}.pdf",
+                        mime="application/pdf",
+                        on_click="ignore",
+                        key=f"reprint_{doc['id']}",
+                    )
+                else:
+                    right.caption("Não disponível")
         if not editable:
             if not issued:
                 st.markdown('<p class="pt-muted">Nenhum documento emitido.</p>', unsafe_allow_html=True)

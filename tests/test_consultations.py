@@ -242,3 +242,60 @@ def test_clinical_data_not_readable_in_database(client, headers_a, patient_id):
     raw = Path(get_engine().url.database).read_bytes()
     for value in sensitive:
         assert value.encode() not in raw
+
+
+# --- previous exams (read-only history) -------------------------------------------------
+
+def _previous(client, headers, pid, cid):
+    return client.get(_url(pid, cid, "/previous-exams"), headers=headers)
+
+
+def test_previous_exams_visible_in_later_consultation(client, headers_a, headers_b, patient_id):
+    c1 = _new(client, headers_a, patient_id, "2025-01-10").json()["id"]
+    for exam in EXAMS[:2]:
+        client.post(_url(patient_id, c1, "/exams"), json=exam, headers=headers_a)
+    c2 = _new(client, headers_b, patient_id, "2025-06-20").json()["id"]
+    client.post(_url(patient_id, c2, "/exams"), json=EXAMS[2], headers=headers_b)
+    c3 = _new(client, headers_a, patient_id).json()["id"]  # today
+
+    groups = _previous(client, headers_a, patient_id, c3).json()
+    assert [g["consultation_id"] for g in groups] == [c2, c1]  # newest first
+    assert groups[0]["consultation_date"] == "2025-06-20"
+    assert groups[0]["pharmacist"]["crf"] == "CRF-RJ 22222"
+    assert [e["exam_name"] for e in groups[1]["exam_results"]] == ["Carga Viral HIV-1 RNA", "Linfócitos T-CD4+"]
+    first = groups[1]["exam_results"][0]
+    assert (first["result"], first["unit"], first["reference_range"]) == ("15400", "cópias/mL", "Indetectável (< 40)")
+    # only consultations before the current one; the current one's own exams are not "previous"
+    assert [g["consultation_id"] for g in _previous(client, headers_a, patient_id, c2).json()] == [c1]
+    assert _previous(client, headers_a, patient_id, c1).json() == []
+
+
+def test_previous_exams_skip_consultations_without_exams(client, headers_a, patient_id):
+    _new(client, headers_a, patient_id, "2025-01-10")
+    c2 = _new(client, headers_a, patient_id).json()["id"]
+    assert _previous(client, headers_a, patient_id, c2).json() == []
+
+
+def test_previous_exams_are_read_only_and_unchanged(client, headers_a, patient_id):
+    c1 = _new(client, headers_a, patient_id, "2025-01-10").json()["id"]
+    exam_id = client.post(_url(patient_id, c1, "/exams"), json=EXAMS[0], headers=headers_a).json()["id"]
+    c2 = _new(client, headers_a, patient_id).json()["id"]
+    before = _previous(client, headers_a, patient_id, c2).json()
+    # no write methods on the history endpoint
+    for method in ("post", "put", "delete"):
+        response = getattr(client, method)(_url(patient_id, c2, "/previous-exams"), headers=headers_a)
+        assert response.status_code == 405
+    # a historical exam cannot be changed through the current consultation
+    response = client.put(_url(patient_id, c2, f"/exams/{exam_id}"), json=EXAMS[1], headers=headers_a)
+    assert response.status_code == 404
+    # working on the current consultation does not touch history
+    client.post(_url(patient_id, c2, "/exams"), json=EXAMS[1], headers=headers_a)
+    client.put(_url(patient_id, c2, "/soap"), json=SOAP_B, headers=headers_a)
+    assert _previous(client, headers_a, patient_id, c2).json() == before
+
+
+def test_previous_exams_require_auth_and_patient_scope(client, headers_a, patient_id):
+    c1 = _new(client, headers_a, patient_id).json()["id"]
+    other_id = client.post("/patients", json=OTHER_PATIENT, headers=headers_a).json()["id"]
+    assert client.get(_url(patient_id, c1, "/previous-exams")).status_code == 401
+    assert _previous(client, headers_a, other_id, c1).status_code == 404

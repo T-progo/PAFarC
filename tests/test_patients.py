@@ -110,7 +110,8 @@ def test_search_by_normalized_name(client, auth_headers):
 
 def test_search_without_match_returns_empty(client, auth_headers):
     _create(client, auth_headers)
-    assert _search(client, auth_headers, "Maria").json() == []  # exact match only
+    assert _search(client, auth_headers, "Mariana").json() == []  # not a prefix of any word
+    assert _search(client, auth_headers, "Souza").json() == []
     assert _search(client, auth_headers, OTHER_CPF).json() == []
 
 
@@ -144,3 +145,65 @@ def test_stored_values_are_not_plaintext(client, auth_headers):
     assert raw  # the database file was actually written
     for plaintext in (CPF, NAME, "Maria", "Silva", DOB):
         assert plaintext.encode() not in raw
+
+
+# --- partial name search ---------------------------------------------------------------
+
+def _names(response):
+    return sorted(p["full_name"] for p in response.json())
+
+
+def test_partial_name_search(client, auth_headers):
+    _create(client, auth_headers)                                       # Maria José da Silva
+    _create(client, auth_headers, name="Mariana Costa", cpf=OTHER_CPF)
+    _create(client, auth_headers, name="João Silveira", cpf="11144477735")
+    assert _names(_search(client, auth_headers, "Maria")) == ["Maria José da Silva", "Mariana Costa"]
+    assert _names(_search(client, auth_headers, "Mar")) == ["Maria José da Silva", "Mariana Costa"]
+    assert _names(_search(client, auth_headers, "silv")) == ["João Silveira", "Maria José da Silva"]
+    # every typed word must match the start of a word of the name
+    assert _names(_search(client, auth_headers, "mar silv")) == ["Maria José da Silva"]
+    assert _names(_search(client, auth_headers, "Costa Mariana")) == ["Mariana Costa"]
+
+
+def test_partial_search_is_case_and_accent_insensitive(client, auth_headers):
+    _create(client, auth_headers, name="José Conceição Araújo", cpf="11144477735")
+    for query in ("jose", "JOSÉ", "concei", "CONCEICAO", "araujo", "  aráu  ", "jos conc ara"):
+        assert _names(_search(client, auth_headers, query)) == ["José Conceição Araújo"], query
+
+
+def test_partial_search_needs_three_letters(client, auth_headers):
+    _create(client, auth_headers)
+    assert _search(client, auth_headers, "Ma").status_code == 422
+    assert _search(client, auth_headers, "da").status_code == 422
+    # short words are ignored when combined with a longer one
+    assert _names(_search(client, auth_headers, "Maria da")) == [NAME]
+
+
+def test_cpf_search_unchanged_with_partial_name_search(client, auth_headers):
+    created = _create(client, auth_headers).json()
+    _create(client, auth_headers, name="Maria Outra", cpf=OTHER_CPF)
+    assert [p["id"] for p in _search(client, auth_headers, CPF_FORMATTED).json()] == [created["id"]]
+    assert _search(client, auth_headers, "123.456").status_code == 422
+
+
+def test_name_tokens_are_not_plaintext(client, auth_headers):
+    _create(client, auth_headers)
+    with get_engine().connect() as connection:
+        tokens = [r[0] for r in connection.execute(text("SELECT token_index FROM patient_name_tokens"))]
+    assert tokens and all(len(t) == 64 for t in tokens)
+    joined = " ".join(tokens)
+    for fragment in ("mar", "maria", "jose", "silva", "Maria"):
+        assert fragment not in joined
+
+
+def test_backfill_creates_tokens_for_older_patients(client, auth_headers, db):
+    from backend.models import PatientNameToken
+    from backend.patients import backfill_name_tokens
+
+    created = _create(client, auth_headers).json()
+    db.query(PatientNameToken).delete()  # simulate a patient registered before partial search
+    db.commit()
+    assert _search(client, auth_headers, "Maria").json() == []
+    assert backfill_name_tokens(db) == 1
+    assert [p["id"] for p in _search(client, auth_headers, "Maria").json()] == [created["id"]]
+    assert backfill_name_tokens(db) == 0  # idempotent

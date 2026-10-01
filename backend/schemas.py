@@ -100,6 +100,18 @@ class GeneratedDocumentOut(BaseModel):
     document_type: str
     created_at: datetime
     pharmacist: PharmacistSummary
+    reprintable: bool
+
+
+class PreviousExamGroup(BaseModel):
+    """Exam results of one earlier consultation of the same patient (read-only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    consultation_id: int
+    consultation_date: date
+    pharmacist: PharmacistSummary
+    exam_results: list["ExamResultOut"]
 
 
 class ConsultationOut(ConsultationSummary):

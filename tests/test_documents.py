@@ -203,3 +203,114 @@ def test_no_pdf_files_left_behind(client, setup, tmp_path, monkeypatch):
     for kind, payload in (("prescription", PRESCRIPTION), ("exam-request", EXAM_REQUEST), ("referral", REFERRAL)):
         assert _doc(client, setup, kind, payload).status_code == 200
     assert pdf_files() == before
+
+
+# --- reprint of issued documents ----------------------------------------------------------
+
+def _issued(client, setup):
+    url = f"/patients/{setup['pid']}/consultations/{setup['cid']}"
+    return client.get(url, headers=setup["a"]).json()["documents"]
+
+
+def _reprint(client, setup, doc_id, headers=None):
+    url = f"/patients/{setup['pid']}/consultations/{setup['cid']}/documents/{doc_id}"
+    return client.get(url, headers=setup["a"] if headers is None else headers)
+
+
+def test_reprint_returns_the_original_pdf(client, setup):
+    original = _doc(client, setup, "prescription", PRESCRIPTION).content
+    [doc] = _issued(client, setup)
+    assert doc["reprintable"] is True
+    response = _reprint(client, setup, doc["id"])
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.content == original
+    # any authenticated pharmacist may reprint (same as read access)
+    assert _reprint(client, setup, doc["id"], headers=setup["b"]).content == original
+
+
+def test_reprint_survives_application_restart(client, setup):
+    from fastapi.testclient import TestClient
+
+    from backend.database import get_engine
+    from backend.main import app
+
+    original = _doc(client, setup, "referral", REFERRAL).content
+    doc_id = _issued(client, setup)[0]["id"]
+    get_engine().dispose()  # drop every pooled connection, as a process restart would
+    with TestClient(app) as restarted:  # runs the startup sequence again
+        assert _reprint(restarted, setup, doc_id).content == original
+
+
+def test_reprint_unaffected_by_later_changes(client, db, setup, monkeypatch):
+    from backend import documents
+    from backend.models import Patient, Pharmacist
+
+    original = _doc(client, setup, "exam-request", EXAM_REQUEST).content
+    doc_id = _issued(client, setup)[0]["id"]
+    # change patient, pharmacist, consultation content and even the document template
+    patient = db.get(Patient, setup["pid"])
+    patient.full_name = "Nome Alterado Depois"
+    db.query(Pharmacist).filter_by(login="farm.a").one().full_name = "Farmacêutica Renomeada"
+    db.commit()
+    url = f"/patients/{setup['pid']}/consultations/{setup['cid']}"
+    soap = {"subjective": "novo", "objective": "", "assessment": "", "plan": ""}
+    client.put(f"{url}/soap", json=soap, headers=setup["a"])
+    monkeypatch.setitem(documents.DOCUMENT_TITLES, "exam_request", "Modelo Novo")
+
+    reprinted = _reprint(client, setup, doc_id).content
+    assert reprinted == original
+    text = pdf_text(reprinted)
+    assert "Benedito Fictício Exemplar" in text and "Farmacêutica Alfa Teste" in text
+    assert "Nome Alterado Depois" not in text and "Modelo Novo" not in text
+
+
+def test_reprint_requires_authentication_and_scope(client, setup):
+    _doc(client, setup, "prescription", PRESCRIPTION)
+    doc_id = _issued(client, setup)[0]["id"]
+    assert _reprint(client, setup, doc_id, headers={}).status_code == 401
+    assert _reprint(client, setup, 9999).status_code == 404
+    other = client.post("/patients", json={**PATIENT, "cpf": "12345678909"}, headers=setup["a"]).json()["id"]
+    other_c = client.post(f"/patients/{other}/consultations", json={}, headers=setup["a"]).json()["id"]
+    url = f"/patients/{other}/consultations/{other_c}/documents/{doc_id}"
+    assert client.get(url, headers=setup["a"]).status_code == 404  # document of another consultation
+
+
+def test_legacy_document_without_stored_pdf_is_not_reprintable(client, db, setup):
+    from backend.models import GeneratedDocument
+
+    db.add(GeneratedDocument(consultation_id=setup["cid"], pharmacist_id=1, document_type="referral"))
+    db.commit()
+    [doc] = _issued(client, setup)
+    assert doc["reprintable"] is False
+    assert _reprint(client, setup, doc["id"]).status_code == 404
+
+
+def test_stored_pdf_is_encrypted_at_rest(client, setup):
+    from sqlalchemy import text
+
+    from backend.database import get_engine
+
+    original = _doc(client, setup, "prescription", PRESCRIPTION).content
+    with get_engine().connect() as connection:
+        stored = connection.execute(text("SELECT pdf_encrypted, pdf_size FROM generated_documents")).one()
+    assert stored.pdf_size == len(original)
+    assert b"%PDF" not in bytes(stored.pdf_encrypted)
+    get_engine().dispose()
+    assert b"%PDF-" not in Path(get_engine().url.database).read_bytes()
+
+
+def test_existing_database_gets_new_document_columns(client):
+    from sqlalchemy import inspect, text
+
+    from backend.database import get_engine, init_db
+
+    with get_engine().begin() as connection:  # recreate the pre-reprint table layout
+        connection.execute(text("DROP TABLE generated_documents"))
+        connection.execute(text(
+            "CREATE TABLE generated_documents (id INTEGER PRIMARY KEY, consultation_id INTEGER, "
+            "pharmacist_id INTEGER, document_type VARCHAR(30), created_at DATETIME)"))
+    init_db()
+    columns = {c["name"] for c in inspect(get_engine()).get_columns("generated_documents")}
+    assert {"pdf_encrypted", "pdf_size"} <= columns

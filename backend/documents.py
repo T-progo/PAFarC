@@ -2,8 +2,9 @@
 Laboratoriais and Encaminhamento / Interconsulta.
 
 PDFs are built in memory from the consultation context plus content entered by
-the pharmacist, returned as the response body, and never written to disk.
-Only a metadata record (type, consultation, pharmacist, time) is stored.
+the pharmacist and returned as the response body; they are never written to disk.
+The issued PDF is stored encrypted in the database with its metadata, so a reprint
+returns exactly the original document, whatever changes later.
 """
 
 from collections.abc import Callable
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_pharmacist
-from backend.consultations import _get_editable_consultation, _get_patient
+from backend.consultations import _get_consultation, _get_editable_consultation, _get_patient
 from backend.database import get_db
 from backend.models import GeneratedDocument, Pharmacist
 from backend.pdf import DocumentContext, DocumentPDF, Establishment, clean_text
@@ -120,10 +121,17 @@ def _issue(
     )
     pdf_bytes = build(context)
     db.add(GeneratedDocument(
-        consultation_id=consultation.id, pharmacist_id=pharmacist.id, document_type=document_type
+        consultation_id=consultation.id,
+        pharmacist_id=pharmacist.id,
+        document_type=document_type,
+        pdf=pdf_bytes,
+        pdf_size=len(pdf_bytes),
     ))
     db.commit()
-    filename = f"{FILE_PREFIXES[document_type]}-atendimento-{consultation.id}.pdf"
+    return _pdf_response(pdf_bytes, f"{FILE_PREFIXES[document_type]}-atendimento-{consultation.id}.pdf")
+
+
+def _pdf_response(pdf_bytes: bytes, filename: str) -> Response:
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -132,6 +140,23 @@ def _issue(
             "Cache-Control": "no-store",
         },
     )
+
+
+@router.get("/{document_id}", response_class=Response)
+def reprint_document(
+    patient_id: int, consultation_id: int, document_id: int, db: DB, _pharmacist: CurrentPharmacist
+) -> Response:
+    """The stored PDF exactly as originally issued (any authenticated pharmacist)."""
+    consultation = _get_consultation(db, patient_id, consultation_id)
+    document = db.get(GeneratedDocument, document_id)
+    if document is None or document.consultation_id != consultation.id:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+    if document.pdf is None:
+        raise HTTPException(
+            status_code=404, detail="Documento emitido antes da reimpressão estar disponível."
+        )
+    prefix = FILE_PREFIXES.get(document.document_type, "documento")
+    return _pdf_response(document.pdf, f"{prefix}-atendimento-{consultation.id}-{document.id}.pdf")
 
 
 @router.post("/prescription", response_class=Response)

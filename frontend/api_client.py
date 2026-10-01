@@ -67,6 +67,14 @@ class PharmaTechAPI:
     def get_consultation(self, patient_id: int, consultation_id: int) -> dict:
         return self._request("GET", f"/patients/{patient_id}/consultations/{consultation_id}")
 
+    def previous_exams(self, patient_id: int, consultation_id: int) -> list[dict]:
+        return self._request("GET", f"/patients/{patient_id}/consultations/{consultation_id}/previous-exams")
+
+    def reprint_document(self, patient_id: int, consultation_id: int, document_id: int) -> bytes:
+        """The stored PDF exactly as originally issued."""
+        path = f"/patients/{patient_id}/consultations/{consultation_id}/documents/{document_id}"
+        return self._request("GET", path, raw=True).content
+
     def save_soap(self, patient_id: int, consultation_id: int, soap: dict) -> dict:
         path = f"/patients/{patient_id}/consultations/{consultation_id}/soap"
         return self._request("PUT", path, json=soap)

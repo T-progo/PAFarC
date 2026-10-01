@@ -4,18 +4,21 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_pharmacist
 from backend.crypto import DecryptionError, get_crypto
 from backend.database import get_db
-from backend.models import Patient
+from backend.models import Patient, PatientNameToken
 from backend.schemas import PatientCreate, PatientOut, PatientSearch
 
 CPF_INDEX_PURPOSE = "patient.cpf"
 NAME_INDEX_PURPOSE = "patient.full_name"
+NAME_PREFIX_PURPOSE = "patient.name_prefix"
+MIN_PREFIX = 3   # shortest searchable word fragment
+MAX_PREFIX = 20  # longer words/queries are matched on their first 20 letters
 MIN_DATE_OF_BIRTH = date(1900, 1, 1)
 SEARCH_LIMIT = 50
 
@@ -53,6 +56,21 @@ def normalize_name(value: str) -> str:
     return " ".join(without_marks.casefold().split())
 
 
+def name_words(value: str) -> list[str]:
+    """Searchable words: normalized (no accents, case-folded), letters/digits only."""
+    return re.findall(r"\w+", normalize_name(value))
+
+
+def name_prefix_indexes(full_name: str) -> set[str]:
+    """Keyed digests of every 3+ letter prefix of every word of the name."""
+    crypto = get_crypto()
+    return {
+        crypto.blind_index(NAME_PREFIX_PURPOSE, word[:length])
+        for word in name_words(full_name)
+        for length in range(MIN_PREFIX, min(len(word), MAX_PREFIX) + 1)
+    }
+
+
 def create_patient(db: Session, *, full_name: str, date_of_birth: date, cpf: str) -> Patient:
     full_name = clean_full_name(full_name)
     if not full_name:
@@ -72,6 +90,7 @@ def create_patient(db: Session, *, full_name: str, date_of_birth: date, cpf: str
         date_of_birth=date_of_birth,
         cpf=cpf_digits,
         cpf_index=cpf_index,
+        name_tokens=[PatientNameToken(token_index=t) for t in name_prefix_indexes(full_name)],
     )
     db.add(patient)
     try:
@@ -84,16 +103,37 @@ def create_patient(db: Session, *, full_name: str, date_of_birth: date, cpf: str
 
 
 def search_patients(db: Session, query: str) -> list[Patient]:
-    """Exact match on CPF (if the query has no letters) or on the normalized full name."""
+    """CPF (if the query has no letters): exact match. Name: every typed word (3+ letters)
+    must be the start of a word of the patient's name, case- and accent-insensitive."""
     crypto = get_crypto()
     if any(c.isalpha() for c in query):
-        name = normalize_name(query)
-        condition = Patient.full_name_index == crypto.blind_index(NAME_INDEX_PURPOSE, name)
+        words = [w[:MAX_PREFIX] for w in name_words(query) if len(w) >= MIN_PREFIX]
+        if not words:
+            raise ValueError("Informe ao menos 3 letras do nome.")
+        digests = {crypto.blind_index(NAME_PREFIX_PURPOSE, w) for w in words}
+        matching_ids = (
+            select(PatientNameToken.patient_id)
+            .where(PatientNameToken.token_index.in_(digests))
+            .group_by(PatientNameToken.patient_id)
+            .having(func.count(func.distinct(PatientNameToken.token_index)) == len(digests))
+        )
+        condition = Patient.id.in_(matching_ids)
     else:
         cpf_digits = normalize_cpf(query)
         condition = Patient.cpf_index == crypto.blind_index(CPF_INDEX_PURPOSE, cpf_digits)
     patients = db.scalars(select(Patient).where(condition).limit(SEARCH_LIMIT)).all()
     return sorted(patients, key=lambda p: normalize_name(p.full_name))
+
+
+def backfill_name_tokens(db: Session) -> int:
+    """Create partial-search tokens for patients registered before they existed."""
+    missing = db.scalars(
+        select(Patient).where(~Patient.id.in_(select(PatientNameToken.patient_id)))
+    ).all()
+    for patient in missing:
+        patient.name_tokens = [PatientNameToken(token_index=t) for t in name_prefix_indexes(patient.full_name)]
+    db.commit()
+    return len(missing)
 
 
 def verify_keys_match_existing_data(db: Session) -> None:

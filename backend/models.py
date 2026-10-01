@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.crypto import EncryptedDate, EncryptedString
+from backend.crypto import EncryptedBinary, EncryptedDate, EncryptedString
 from backend.database import Base
 
 
@@ -39,6 +39,19 @@ class Patient(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+    name_tokens: Mapped[list["PatientNameToken"]] = relationship(cascade="all, delete-orphan")
+
+
+class PatientNameToken(Base):
+    """Keyed HMAC digest of one name-word prefix (3+ letters), for partial name search
+    without storing the name in plaintext."""
+
+    __tablename__ = "patient_name_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    token_index: Mapped[str] = mapped_column(String(64), index=True)
 
 
 class Consultation(Base):
@@ -96,7 +109,8 @@ class ExamResult(Base):
 
 
 class GeneratedDocument(Base):
-    """Record that a document was issued. The PDF itself is never stored."""
+    """An issued document. The PDF exactly as issued is stored encrypted, so it can be
+    reprinted unchanged later; it is only loaded when a reprint is requested."""
 
     __tablename__ = "generated_documents"
 
@@ -105,5 +119,12 @@ class GeneratedDocument(Base):
     pharmacist_id: Mapped[int] = mapped_column(ForeignKey("pharmacists.id"))
     document_type: Mapped[str] = mapped_column(String(30))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Null for documents issued before PDFs were stored (not reprintable).
+    pdf: Mapped[bytes | None] = mapped_column("pdf_encrypted", EncryptedBinary, nullable=True, deferred=True)
+    pdf_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     pharmacist: Mapped[Pharmacist] = relationship()
+
+    @property
+    def reprintable(self) -> bool:
+        return self.pdf_size is not None

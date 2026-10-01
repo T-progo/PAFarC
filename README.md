@@ -21,8 +21,15 @@ Browser ──HTTPS──> Caddy (reverse proxy) ──> Streamlit UI (frontend/
   in server memory (never in the browser).
 - **Data protection**: patient name, date of birth and CPF, all SOAP sections and all exam fields are encrypted at
   rest (Fernet). Search uses keyed HMAC indexes of the normalized CPF and full name. Passwords are bcrypt hashes.
-- **Documents**: generated in memory (`backend/pdf.py`, `backend/documents.py`), downloaded by the browser, never
-  written to disk. Only metadata (type, consultation, pharmacist, time) is stored.
+- **Documents**: generated in memory (`backend/pdf.py`, `backend/documents.py`) and downloaded by the browser;
+  no PDF file is ever written to disk. The issued PDF is stored **encrypted in the database** with its metadata,
+  so "Reimprimir" returns exactly the original document even if patient, pharmacist, consultation data or the
+  document template change later. Documents issued before this feature have no stored copy.
+- **Patient search**: CPF (exact) or name. Name search is partial and case/accent-insensitive: every typed word
+  (3+ letters) must be the start of a word of the name ("mar silv" finds "Maria José da Silva"). It uses keyed
+  HMAC digests of each name-word prefix (`patient_name_tokens`), so no name is stored in plaintext.
+- **Consultation screen**: the current consultation's exam results appear right after "Objetivo", followed by a
+  read-only "Exames anteriores" section with the patient's earlier results, grouped by consultation.
 
 Python **3.10+** (tested with 3.12).
 
@@ -253,7 +260,9 @@ Tests use a temporary database and test-only keys; they never touch the real dat
 | GET | `/patients/{id}/consultations/{cid}` | Consultation with SOAP, exams and issued documents |
 | PUT | `/patients/{id}/consultations/{cid}/soap` | Save SOAP |
 | POST / PUT / DELETE | `/patients/{id}/consultations/{cid}/exams[/{eid}]` | Add / edit / delete exam result |
+| GET | `/patients/{id}/consultations/{cid}/previous-exams` | Exam results of earlier consultations (read-only) |
 | POST | `/patients/{id}/consultations/{cid}/documents/{prescription,exam-request,referral}` | Generate PDF |
+| GET | `/patients/{id}/consultations/{cid}/documents/{doc_id}` | Reprint: the stored PDF exactly as issued |
 
 All routes except `/health` and `/auth/login` require `Authorization: Bearer <token>`.
 

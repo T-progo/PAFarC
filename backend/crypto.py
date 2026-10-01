@@ -12,7 +12,7 @@ from datetime import date
 from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import Text
+from sqlalchemy import LargeBinary, Text
 from sqlalchemy.types import TypeDecorator
 
 from backend.config import get_settings
@@ -47,6 +47,15 @@ class CryptoService:
     def encrypt(self, plaintext: str) -> str:
         return self._fernet.encrypt(plaintext.encode("utf-8")).decode("ascii")
 
+    def encrypt_bytes(self, data: bytes) -> bytes:
+        return self._fernet.encrypt(data)
+
+    def decrypt_bytes(self, token: bytes) -> bytes:
+        try:
+            return self._fernet.decrypt(token)
+        except InvalidToken:
+            raise DecryptionError("Stored value could not be decrypted with the configured key.") from None
+
     def decrypt(self, token: str) -> str:
         try:
             return self._fernet.decrypt(token.encode("ascii")).decode("utf-8")
@@ -77,6 +86,19 @@ class EncryptedString(TypeDecorator):
 
     def process_result_value(self, value: str | None, dialect) -> str | None:
         return None if value is None else get_crypto().decrypt(value)
+
+
+class EncryptedBinary(TypeDecorator):
+    """Binary column stored encrypted (e.g. issued PDFs); Python code sees plaintext bytes."""
+
+    impl = LargeBinary
+    cache_ok = True
+
+    def process_bind_param(self, value: bytes | None, dialect) -> bytes | None:
+        return None if value is None else get_crypto().encrypt_bytes(value)
+
+    def process_result_value(self, value: bytes | None, dialect) -> bytes | None:
+        return None if value is None else get_crypto().decrypt_bytes(value)
 
 
 class EncryptedDate(TypeDecorator):
