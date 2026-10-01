@@ -1,0 +1,19 @@
+﻿<service>
+  <id>PharmaTech-Nginx</id>
+  <name>PharmaTech Nginx (public reverse proxy)</name>
+  <description>Public entry point on port 80; proxies to the Streamlit UI on 127.0.0.1:8501.</description>
+  <executable>C:\PharmaTech\nginx\nginx.exe</executable>
+  <workingdirectory>C:\PharmaTech\nginx</workingdirectory>
+  <stopexecutable>C:\PharmaTech\nginx\nginx.exe</stopexecutable>
+  <stoparguments>-s quit</stoparguments>
+  <depend>PharmaTech-UI</depend>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>15 sec</stoptimeout>
+  <logpath>C:\PharmaTech\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log></service>

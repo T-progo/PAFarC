@@ -1,0 +1,17 @@
+﻿<service>
+  <id>PharmaTech-API</id>
+  <name>PharmaTech API (FastAPI)</name>
+  <description>PharmaTech backend on 127.0.0.1:8000 (localhost only, not public). Reads C:\PharmaTech\config\.env.</description>
+  <executable>C:\PharmaTech\venv\Scripts\python.exe</executable>
+  <arguments>-m uvicorn backend.main:app --app-dir "D:\Darlan - PAFarC" --host 127.0.0.1 --port 8000 --workers 1 --no-server-header</arguments>
+  <workingdirectory>C:\PharmaTech\config</workingdirectory>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>15 sec</stoptimeout>
+  <logpath>C:\PharmaTech\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log></service>

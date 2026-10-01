@@ -121,6 +121,61 @@ Notes:
 - In containers or platforms with ephemeral disks, the database directory **must** be a persistent volume,
   otherwise all data is lost on restart/redeploy.
 
+## Windows VPS deployment (current live environment)
+
+Templates are in `deploy/windows/`. Layout on the server (outside the Git checkout):
+
+| Path | Contents | Access |
+|---|---|---|
+| `C:\PharmaTech\config\.env` | Production secrets and settings | Administrators, SYSTEM, API service (read) |
+| `C:\PharmaTech\data\pharmatech.db` | SQLite database | Administrators, SYSTEM, API service (modify) |
+| `C:\PharmaTech\backups\` | Database backups | Administrators, SYSTEM |
+| `C:\PharmaTech\venv\` | Production virtualenv (`requirements.txt` only) | read: API, UI |
+| `C:\PharmaTech\nginx\` | Nginx 1.30.x (official Windows build), `conf\nginx.conf` | Nginx service |
+| `C:\PharmaTech\services\` | WinSW 2.12 service wrappers (`.exe` + `.xml`) | – |
+| `C:\PharmaTech\logs\` | Service logs (rotated, 8 × 10 MB) | services (modify) |
+
+Windows services (automatic start, restart on failure, each under its own virtual account
+`NT SERVICE\<name>`, no administrator rights):
+
+| Service | Listens on | Notes |
+|---|---|---|
+| `PharmaTech-API` | 127.0.0.1:8000 | `uvicorn … --workers 1`; working dir `C:\PharmaTech\config` (reads `.env`) |
+| `PharmaTech-UI` | 127.0.0.1:8501 | Streamlit headless; only `PHARMATECH_API_URL` in its environment |
+| `PharmaTech-Nginx` | 0.0.0.0:80 | Public entry point; proxies everything to Streamlit (WebSocket enabled). FastAPI is not proxied. |
+
+Windows Firewall: one inbound rule, "PharmaTech HTTP (Nginx, port 80)", TCP 80 for `nginx.exe` only.
+Ports 8000/8501 are bound to localhost and have no firewall rule.
+
+Day-to-day commands (PowerShell as Administrator):
+
+```powershell
+powershell -File C:\PharmaTech\check.ps1                 # services, listeners, health endpoints
+C:\PharmaTech\create-pharmacist.cmd --full-name "Nome" --crf "CRF-UF 00000" --login nome.sobrenome
+C:\PharmaTech\backup.cmd                                  # -> C:\PharmaTech\backups\pharmatech-<timestamp>.db
+Get-Service PharmaTech-*
+Get-Content C:\PharmaTech\logs\PharmaTech-API.err.log -Tail 50
+```
+
+Update procedure (the database and `.env` live outside the checkout and are never touched):
+
+```powershell
+C:\PharmaTech\backup.cmd
+cd "D:\Darlan - PAFarC"; git pull
+C:\PharmaTech\venv\Scripts\python.exe -m pip install -r requirements.txt
+Restart-Service PharmaTech-API -Force                     # stops UI and Nginx too (dependents)
+Start-Service PharmaTech-UI, PharmaTech-Nginx
+powershell -File C:\PharmaTech\check.ps1
+```
+
+Adding HTTPS later (requires a domain whose DNS A record points to the server's IP):
+
+1. Serve `/.well-known/acme-challenge/` from a folder (e.g. `C:\PharmaTech\acme`) in `nginx.conf`.
+2. Obtain a Let's Encrypt certificate with win-acme (`wacs.exe`, filesystem/webroot validation, PEM output to
+   `C:\PharmaTech\nginx\certs`); win-acme installs a scheduled task for renewal.
+3. Add a `listen 443 ssl` server block using those PEM files (same `location /` as now), redirect port 80 to
+   HTTPS, open TCP 443 in the firewall for `nginx.exe`, then restart `PharmaTech-Nginx`.
+
 ## Database, backup and restore
 
 The database is the single SQLite file at `PHARMATECH_DATABASE_URL`. A complete backup needs:

@@ -9,6 +9,11 @@ import httpx
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 
+# One shared client for the whole UI process: reuses connections and the TLS setup
+# instead of rebuilding them on every call (~300 ms each). It holds no per-user
+# state: the user's token is sent per request and the API never sets cookies.
+_http = httpx.Client(timeout=30.0)
+
 
 class ApiError(Exception):
     def __init__(self, status_code: int, detail: str) -> None:
@@ -25,9 +30,7 @@ class PharmaTechAPI:
     def _request(self, method: str, path: str, raw: bool = False, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         try:
-            response = httpx.request(
-                method, f"{self.base_url}{path}", headers=headers, timeout=30.0, **kwargs
-            )
+            response = _http.request(method, f"{self.base_url}{path}", headers=headers, **kwargs)
         except httpx.HTTPError:
             raise ApiError(0, "Não foi possível conectar ao servidor PharmaTech.") from None
         if raw and response.is_success:

@@ -1,0 +1,19 @@
+﻿<service>
+  <id>PharmaTech-UI</id>
+  <name>PharmaTech UI (Streamlit)</name>
+  <description>PharmaTech Streamlit UI on 127.0.0.1:8501 (localhost only; published by Nginx). Receives only the API URL, no secrets.</description>
+  <executable>C:\PharmaTech\venv\Scripts\python.exe</executable>
+  <arguments>-m streamlit run frontend/app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true</arguments>
+  <workingdirectory>D:\Darlan - PAFarC</workingdirectory>
+  <env name="PHARMATECH_API_URL" value="http://127.0.0.1:8000"/>
+  <depend>PharmaTech-API</depend>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <stoptimeout>15 sec</stoptimeout>
+  <logpath>C:\PharmaTech\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log></service>
