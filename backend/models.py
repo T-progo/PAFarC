@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.crypto import EncryptedDate, EncryptedString
 from backend.database import Base
@@ -39,3 +39,56 @@ class Patient(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class Consultation(Base):
+    __tablename__ = "consultations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
+    pharmacist_id: Mapped[int] = mapped_column(ForeignKey("pharmacists.id"), index=True)
+    consultation_date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    pharmacist: Mapped[Pharmacist] = relationship()
+    soap: Mapped["SoapRecord | None"] = relationship(
+        back_populates="consultation", cascade="all, delete-orphan"
+    )
+    exam_results: Mapped[list["ExamResult"]] = relationship(
+        back_populates="consultation", cascade="all, delete-orphan", order_by="ExamResult.id"
+    )
+
+
+class SoapRecord(Base):
+    """SOAP narrative of one consultation; every section is encrypted at rest."""
+
+    __tablename__ = "soap_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    consultation_id: Mapped[int] = mapped_column(ForeignKey("consultations.id"), unique=True)
+    subjective: Mapped[str] = mapped_column("subjective_encrypted", EncryptedString)
+    objective: Mapped[str] = mapped_column("objective_encrypted", EncryptedString)
+    assessment: Mapped[str] = mapped_column("assessment_encrypted", EncryptedString)
+    plan: Mapped[str] = mapped_column("plan_encrypted", EncryptedString)
+
+    consultation: Mapped[Consultation] = relationship(back_populates="soap")
+
+
+class ExamResult(Base):
+    """Manually entered laboratory/exam result; all clinical fields encrypted at rest."""
+
+    __tablename__ = "exam_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    consultation_id: Mapped[int] = mapped_column(ForeignKey("consultations.id"), index=True)
+    exam_name: Mapped[str] = mapped_column("exam_name_encrypted", EncryptedString)
+    result: Mapped[str] = mapped_column("result_encrypted", EncryptedString)
+    unit: Mapped[str] = mapped_column("unit_encrypted", EncryptedString)
+    reference_range: Mapped[str] = mapped_column("reference_range_encrypted", EncryptedString)
+    notes: Mapped[str] = mapped_column("notes_encrypted", EncryptedString)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    consultation: Mapped[Consultation] = relationship(back_populates="exam_results")

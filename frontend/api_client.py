@@ -29,6 +29,8 @@ class PharmaTechAPI:
             )
         except httpx.HTTPError:
             raise ApiError(0, "Não foi possível conectar ao servidor PharmaTech.") from None
+        if response.status_code == 204:
+            return None
         if response.is_success:
             return response.json()
         raise ApiError(response.status_code, _error_detail(response))
@@ -49,6 +51,31 @@ class PharmaTechAPI:
 
     def get_patient(self, patient_id: int) -> dict:
         return self._request("GET", f"/patients/{patient_id}")
+
+    def create_consultation(self, patient_id: int) -> dict:
+        return self._request("POST", f"/patients/{patient_id}/consultations", json={})
+
+    def list_consultations(self, patient_id: int) -> list[dict]:
+        return self._request("GET", f"/patients/{patient_id}/consultations")
+
+    def get_consultation(self, patient_id: int, consultation_id: int) -> dict:
+        return self._request("GET", f"/patients/{patient_id}/consultations/{consultation_id}")
+
+    def save_soap(self, patient_id: int, consultation_id: int, soap: dict) -> dict:
+        path = f"/patients/{patient_id}/consultations/{consultation_id}/soap"
+        return self._request("PUT", path, json=soap)
+
+    def add_exam(self, patient_id: int, consultation_id: int, exam: dict) -> dict:
+        path = f"/patients/{patient_id}/consultations/{consultation_id}/exams"
+        return self._request("POST", path, json=exam)
+
+    def update_exam(self, patient_id: int, consultation_id: int, exam_id: int, exam: dict) -> dict:
+        path = f"/patients/{patient_id}/consultations/{consultation_id}/exams/{exam_id}"
+        return self._request("PUT", path, json=exam)
+
+    def delete_exam(self, patient_id: int, consultation_id: int, exam_id: int) -> None:
+        path = f"/patients/{patient_id}/consultations/{consultation_id}/exams/{exam_id}"
+        self._request("DELETE", path)
 
 
 def _error_detail(response: httpx.Response) -> str:
