@@ -8,6 +8,9 @@ _TEST_DIR = Path(tempfile.mkdtemp(prefix="pharmatech-tests-"))
 os.environ["PHARMATECH_DATABASE_URL"] = f"sqlite:///{(_TEST_DIR / 'test.db').as_posix()}"
 os.environ["PHARMATECH_SECRET_KEY"] = "test-secret-key-not-for-production-0123456789"
 os.environ["PHARMATECH_ACCESS_TOKEN_EXPIRE_MINUTES"] = "5"
+# Fixed, test-only keys (valid Fernet key format; never used outside tests).
+os.environ["PHARMATECH_DATA_ENCRYPTION_KEY"] = "dGVzdC1vbmx5LWZlcm5ldC1rZXktMDAwMDAwMDAwMDA="
+os.environ["PHARMATECH_BLIND_INDEX_KEY"] = "test-blind-index-key-not-for-production-0123"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

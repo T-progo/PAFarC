@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     secret_key: str = Field(min_length=32)
     access_token_expire_minutes: int = Field(default=60, gt=0)
     jwt_algorithm: str = "HS256"
+    # Sensitive patient data protection (validated by backend.crypto).
+    data_encryption_key: str
+    blind_index_key: str
 
 
 @lru_cache
@@ -27,7 +30,8 @@ def get_settings() -> Settings:
         return Settings()
     except ValidationError as exc:
         raise RuntimeError(
-            "Invalid PharmaTech configuration. PHARMATECH_SECRET_KEY must be set "
-            "(environment or .env) to a random value of at least 32 characters. "
+            "Invalid PharmaTech configuration. PHARMATECH_SECRET_KEY, "
+            "PHARMATECH_DATA_ENCRYPTION_KEY and PHARMATECH_BLIND_INDEX_KEY must be set "
+            "(environment or .env); see .env.example. "
             f"Details: {exc}"
         ) from None

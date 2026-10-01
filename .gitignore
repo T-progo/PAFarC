@@ -32,6 +32,7 @@ data/
 !.env.example
 *.pem
 *.key
+.streamlit/secrets.toml
 
 # IDE / OS
 .vscode/
