@@ -28,14 +28,14 @@ st.set_page_config(page_title=f"{APP_NAME} · PAFarC", page_icon=str(PHARMATECH_
 st.markdown(
     """
     <style>
-    h1, h2, h3 { color: #E6E6E6; letter-spacing: 0.02em; }
-    [data-testid="stSidebar"] { border-right: 1px solid #2E2E2E; }
-    [data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] { border-color: #3A3A3A; }
-    .pt-label { color: #9E9E9E; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
-    .pt-value { color: #F2F2F2; font-size: 1.15rem; margin-bottom: 0.8rem; }
-    .pt-muted { color: #9E9E9E; }
-    /* Dark text on the silver primary buttons (white-on-silver was unreadable). */
-    button[kind^="primary"], button[kind^="primary"] p { color: #121212 !important; font-weight: 600; }
+    h1, h2, h3 { color: #F7EFE3; letter-spacing: 0.02em; }
+    [data-testid="stSidebar"] { border-right: 1px solid #4A4138; }
+    [data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] { border-color: #554A40; }
+    .pt-label { color: #BBAE9E; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .pt-value { color: #F3ECE2; font-size: 1.15rem; margin-bottom: 0.8rem; }
+    .pt-muted { color: #BBAE9E; }
+    /* Dark text on the champagne primary buttons (white-on-silver was unreadable). */
+    button[kind^="primary"], button[kind^="primary"] p { color: #2B2622 !important; font-weight: 600; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -165,7 +165,7 @@ def install_app_metadata() -> None:
         "function add(tag, attrs) {var e = document.createElement(tag);"
         "for (var k in attrs) e.setAttribute(k, attrs[k]); h.appendChild(e);}"
         "add('link', {rel: 'manifest', href: 'app/static/manifest.json'});"
-        "add('meta', {name: 'theme-color', content: '#121212'});"
+        "add('meta', {name: 'theme-color', content: '#2B2622'});"
         "add('meta', {name: 'mobile-web-app-capable', content: 'yes'});"
         "add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});"
         "add('meta', {name: 'apple-mobile-web-app-title', content: 'PharmaTech'});"
