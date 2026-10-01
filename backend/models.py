@@ -60,6 +60,7 @@ class Consultation(Base):
     exam_results: Mapped[list["ExamResult"]] = relationship(
         back_populates="consultation", cascade="all, delete-orphan", order_by="ExamResult.id"
     )
+    documents: Mapped[list["GeneratedDocument"]] = relationship(order_by="GeneratedDocument.id")
 
 
 class SoapRecord(Base):
@@ -92,3 +93,17 @@ class ExamResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     consultation: Mapped[Consultation] = relationship(back_populates="exam_results")
+
+
+class GeneratedDocument(Base):
+    """Record that a document was issued. The PDF itself is never stored."""
+
+    __tablename__ = "generated_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    consultation_id: Mapped[int] = mapped_column(ForeignKey("consultations.id"), index=True)
+    pharmacist_id: Mapped[int] = mapped_column(ForeignKey("pharmacists.id"))
+    document_type: Mapped[str] = mapped_column(String(30))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    pharmacist: Mapped[Pharmacist] = relationship()

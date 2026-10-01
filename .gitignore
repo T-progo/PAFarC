@@ -34,6 +34,9 @@ data/
 *.key
 .streamlit/secrets.toml
 
+# Generated documents must never be committed
+*.pdf
+
 # IDE / OS
 .vscode/
 .idea/

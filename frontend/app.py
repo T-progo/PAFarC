@@ -5,7 +5,7 @@
 
 import html
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -85,6 +85,9 @@ def open_consultation(consultation_id: int) -> None:
 
 def close_consultation() -> None:
     st.session_state.pop("consultation_id", None)
+    # Generated PDFs live only in session memory; drop them when leaving the consultation.
+    for key in [k for k in st.session_state if str(k).startswith("doc_result_")]:
+        del st.session_state[key]
 
 
 def field(label: str, value: str) -> None:
@@ -300,6 +303,7 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
 
     soap_section(patient_id, consultation, editable)
     exams_section(patient_id, consultation, editable)
+    documents_section(patient_id, patient, consultation, editable)
 
 
 def soap_section(patient_id: int, consultation: dict, editable: bool) -> None:
@@ -421,6 +425,157 @@ def save_exam(patient_id: int, cid: int, exam_id: int | None, values: dict, mess
         del st.session_state[f"exam_select_{cid}"]
     st.session_state["flash"] = message
     st.rerun()
+
+
+DOC_PRESCRIPTION = "prescription"
+DOC_EXAM_REQUEST = "exam-request"
+DOC_REFERRAL = "referral"
+DOCUMENT_LABELS = {
+    DOC_PRESCRIPTION: "Prescrição / Plano de Cuidado",
+    DOC_EXAM_REQUEST: "Solicitação de Exames",
+    DOC_REFERRAL: "Encaminhamento / Interconsulta",
+}
+ISSUED_LABELS = {
+    "prescription": "Prescrição / Plano de Cuidado",
+    "exam_request": "Solicitação de Exames Laboratoriais",
+    "referral": "Encaminhamento / Interconsulta",
+}
+MAX_PRESCRIPTION_ITEMS = 15
+
+
+def format_timestamp(iso: str) -> str:
+    value = datetime.fromisoformat(iso)
+    if value.tzinfo is None:  # stored as UTC
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone().strftime("%d/%m/%Y %H:%M")
+
+
+def documents_section(patient_id: int, patient: dict, consultation: dict, editable: bool) -> None:
+    cid = consultation["id"]
+    with st.container(border=True):
+        st.subheader("Documentos")
+        issued = consultation.get("documents", [])
+        if issued:
+            st.markdown("**Documentos emitidos**")
+            for doc in reversed(issued):
+                st.markdown(
+                    f"- {ISSUED_LABELS.get(doc['document_type'], doc['document_type'])} · "
+                    f"{format_timestamp(doc['created_at'])} · {doc['pharmacist']['full_name']}"
+                )
+        if not editable:
+            if not issued:
+                st.markdown('<p class="pt-muted">Nenhum documento emitido.</p>', unsafe_allow_html=True)
+            return
+
+        kind = st.radio(
+            "Tipo de documento",
+            list(DOCUMENT_LABELS),
+            format_func=DOCUMENT_LABELS.get,
+            horizontal=True,
+            key=f"doc_type_{cid}",
+        )
+        pharmacist = st.session_state["pharmacist"]
+        st.caption(
+            f"Paciente: {patient['full_name']} · CPF {format_cpf(patient['cpf'])} — "
+            f"Farmacêutico(a): {pharmacist['full_name']} · {pharmacist['crf']} "
+            "(preenchidos automaticamente no documento)"
+        )
+        if kind == DOC_PRESCRIPTION:
+            payload = prescription_form(cid)
+        elif kind == DOC_EXAM_REQUEST:
+            payload = exam_request_form(cid, consultation)
+        else:
+            payload = referral_form(cid)
+
+        if payload is not None:
+            try:
+                filename, data = api().generate_document(patient_id, cid, kind, payload)
+            except ApiError as exc:
+                show_api_error(exc)
+                return
+            st.session_state[f"doc_result_{cid}"] = {"kind": kind, "filename": filename, "data": data}
+            st.session_state["flash"] = f"{DOCUMENT_LABELS[kind]}: PDF gerado."
+            st.rerun()
+
+        result = st.session_state.get(f"doc_result_{cid}")
+        if result and result["kind"] == kind:
+            st.download_button(
+                "Baixar PDF",
+                data=result["data"],
+                file_name=result["filename"],
+                mime="application/pdf",
+                type="primary",
+                on_click="ignore",
+                key=f"doc_download_{cid}",
+            )
+
+
+def prescription_form(cid: int) -> dict | None:
+    count = st.number_input(
+        "Número de itens", min_value=1, max_value=MAX_PRESCRIPTION_ITEMS, value=1, step=1, key=f"rx_count_{cid}"
+    )
+    with st.form(f"rx_form_{cid}"):
+        items = []
+        for i in range(int(count)):
+            with st.container(border=True):
+                st.markdown(f"**Item {i + 1}**")
+                item = {"medication": st.text_input("Medicamento / cuidado", key=f"rx_{cid}_{i}_medication")}
+                col1, col2 = st.columns(2)
+                item["dosage"] = col1.text_input("Dosagem", key=f"rx_{cid}_{i}_dosage")
+                item["route"] = col2.text_input("Via", key=f"rx_{cid}_{i}_route")
+                col3, col4 = st.columns(2)
+                item["posology"] = col3.text_input("Posologia", key=f"rx_{cid}_{i}_posology")
+                item["duration"] = col4.text_input("Tempo de tratamento", key=f"rx_{cid}_{i}_duration")
+                item["guidance"] = st.text_area(
+                    "Orientações farmacêuticas / estilo de vida", height=90, key=f"rx_{cid}_{i}_guidance"
+                )
+                items.append(item)
+        submitted = st.form_submit_button("Gerar PDF", type="primary")
+    if not submitted:
+        return None
+    if any(not item["medication"].strip() for item in items):
+        st.warning("Informe o medicamento ou cuidado em todos os itens.")
+        return None
+    return {"items": items}
+
+
+def exam_request_form(cid: int, consultation: dict) -> dict | None:
+    recorded = list(dict.fromkeys(exam["exam_name"] for exam in consultation["exam_results"]))
+    with st.form(f"exam_request_form_{cid}"):
+        selected = st.multiselect(
+            "Exames registrados neste atendimento",
+            recorded,
+            placeholder="Selecione (opcional)",
+            key=f"er_{cid}_selected",
+        ) if recorded else []
+        others = st.text_area("Exames solicitados (um por linha)", height=110, key=f"er_{cid}_others")
+        justification = st.text_area("Justificativa clínica", height=110, key=f"er_{cid}_justification")
+        context = st.text_area(
+            "Contexto do acompanhamento farmacoterapêutico (opcional)", height=90, key=f"er_{cid}_context"
+        )
+        submitted = st.form_submit_button("Gerar PDF", type="primary")
+    if not submitted:
+        return None
+    exams = list(dict.fromkeys(selected + [line.strip() for line in others.splitlines() if line.strip()]))
+    if not exams or not justification.strip():
+        st.warning("Informe ao menos um exame e a justificativa clínica.")
+        return None
+    return {"exams": exams, "clinical_justification": justification, "follow_up_context": context}
+
+
+def referral_form(cid: int) -> dict | None:
+    with st.form(f"referral_form_{cid}"):
+        destination = st.text_input("Profissional / equipe de destino", key=f"ref_{cid}_destination")
+        summary = st.text_area("Resumo do caso", height=130, key=f"ref_{cid}_summary")
+        prm = st.text_area("PRM identificado", height=90, key=f"ref_{cid}_prm")
+        conduct = st.text_area("Conduta sugerida", height=90, key=f"ref_{cid}_conduct")
+        submitted = st.form_submit_button("Gerar PDF", type="primary")
+    if not submitted:
+        return None
+    if not all(v.strip() for v in (destination, summary, prm, conduct)):
+        st.warning("Preencha destino, resumo do caso, PRM e conduta sugerida.")
+        return None
+    return {"destination": destination, "case_summary": summary, "prm": prm, "suggested_conduct": conduct}
 
 
 # --- main --------------------------------------------------------------------

@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # Sensitive patient data protection (validated by backend.crypto).
     data_encryption_key: str
     blind_index_key: str
+    # Establishment identification printed on documents. Empty values are omitted.
+    establishment_name: str = "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC"
+    establishment_address: str = ""
+    establishment_cnpj: str = ""
+    establishment_phone: str = ""
+    establishment_city: str = ""  # e.g. "Cidade - UF"; used in the date/location line
 
 
 @lru_cache

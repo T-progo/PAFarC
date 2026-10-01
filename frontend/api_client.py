@@ -1,6 +1,7 @@
 """Thin HTTP client for the PharmaTech FastAPI backend. The UI talks only to this."""
 
 import os
+import re
 from datetime import date
 from typing import Any
 
@@ -21,14 +22,16 @@ class PharmaTechAPI:
         self.base_url = (base_url or os.environ.get("PHARMATECH_API_URL", DEFAULT_API_URL)).rstrip("/")
         self.token = token
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    def _request(self, method: str, path: str, raw: bool = False, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         try:
             response = httpx.request(
-                method, f"{self.base_url}{path}", headers=headers, timeout=15.0, **kwargs
+                method, f"{self.base_url}{path}", headers=headers, timeout=30.0, **kwargs
             )
         except httpx.HTTPError:
             raise ApiError(0, "Não foi possível conectar ao servidor PharmaTech.") from None
+        if raw and response.is_success:
+            return response
         if response.status_code == 204:
             return None
         if response.is_success:
@@ -76,6 +79,15 @@ class PharmaTechAPI:
     def delete_exam(self, patient_id: int, consultation_id: int, exam_id: int) -> None:
         path = f"/patients/{patient_id}/consultations/{consultation_id}/exams/{exam_id}"
         self._request("DELETE", path)
+
+    def generate_document(
+        self, patient_id: int, consultation_id: int, kind: str, payload: dict
+    ) -> tuple[str, bytes]:
+        """Returns (filename, pdf_bytes); the PDF is kept in memory only."""
+        path = f"/patients/{patient_id}/consultations/{consultation_id}/documents/{kind}"
+        response = self._request("POST", path, json=payload, raw=True)
+        match = re.search(r'filename="([^"]+)"', response.headers.get("content-disposition", ""))
+        return (match.group(1) if match else f"{kind}.pdf"), response.content
 
 
 def _error_detail(response: httpx.Response) -> str:

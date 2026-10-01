@@ -3,7 +3,7 @@
 PharmaTech is the clinical pharmacy application of **PAFarC** (Programa de Aperfeiçoamento em Farmácia Clínica).
 
 Current stage: pharmacist login → patient registration/search → patient profile → clinical consultations
-(SOAP + manually entered exam results) → consultation history.
+(SOAP + manually entered exam results) → consultation history → PDF documents.
 
 - **Backend:** FastAPI + SQLAlchemy + SQLite (`backend/`)
 - **UI:** Streamlit (`frontend/`), which talks only to the FastAPI backend
@@ -30,6 +30,8 @@ Fill in the required values in `.env` (generation commands are in `.env.example`
 | `PHARMATECH_ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Bearer token lifetime |
 | `PHARMATECH_DATA_ENCRYPTION_KEY` | *(required)* | Fernet key encrypting patient data |
 | `PHARMATECH_BLIND_INDEX_KEY` | *(required)* | HMAC key for CPF/name search indexes, ≥ 32 characters |
+| `PHARMATECH_ESTABLISHMENT_NAME` | PAFarC full name | Establishment name on documents |
+| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` / `_CITY` | *(empty)* | Optional; omitted from documents when empty |
 | `PHARMATECH_API_URL` | `http://127.0.0.1:8000` | Backend address used by the Streamlit UI |
 
 **Back up `PHARMATECH_DATA_ENCRYPTION_KEY` and `PHARMATECH_BLIND_INDEX_KEY` securely.** Without them, stored patient data cannot be read or searched.
@@ -52,6 +54,21 @@ Fill in the required values in `.env` (generation commands are in `.env.example`
   the SOAP or exam results of a consultation.
 - All consultation routes are nested under the patient and return 404 if the consultation
   does not belong to that patient.
+
+## Documents
+
+From an open consultation, the responsible pharmacist can issue:
+
+- **Prescrição / Plano de Cuidado**: one or more items (medicamento/cuidado, dosagem, via, posologia, tempo de tratamento, orientações)
+- **Solicitação de Exames Laboratoriais**: requested exams, clinical justification, optional follow-up context
+- **Encaminhamento / Interconsulta**: destination, case summary, identified PRM, suggested conduct
+
+Patient and pharmacist identification are filled in automatically. PDFs are generated in memory by
+`backend/pdf.py` (shared layout) and `backend/documents.py` (the three documents), returned to the UI
+for download, and never written to disk. Only a metadata record is stored (type, consultation,
+pharmacist, timestamp). Content is entered by the pharmacist; nothing is derived automatically from SOAP or exams.
+
+Fonts: DejaVu Sans (`backend/assets/fonts/`, see `DejaVu-LICENSE.txt`).
 
 ## Create a pharmacist
 
@@ -94,6 +111,9 @@ The UI opens at http://localhost:8501. API docs: http://127.0.0.1:8000/docs
 | POST | `/patients/{id}/consultations/{cid}/exams` | Bearer | Add exam result (`exam_name`, `result`, `unit`, `reference_range`, `notes`) |
 | PUT | `/patients/{id}/consultations/{cid}/exams/{eid}` | Bearer | Edit exam result |
 | DELETE | `/patients/{id}/consultations/{cid}/exams/{eid}` | Bearer | Delete exam result |
+| POST | `/patients/{id}/consultations/{cid}/documents/prescription` | Bearer | Prescrição / Plano de Cuidado PDF |
+| POST | `/patients/{id}/consultations/{cid}/documents/exam-request` | Bearer | Solicitação de Exames PDF |
+| POST | `/patients/{id}/consultations/{cid}/documents/referral` | Bearer | Encaminhamento / Interconsulta PDF |
 
 ## Tests
 

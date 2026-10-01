@@ -6,7 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from backend import auth, consultations, patients
+from backend import auth, consultations, documents, patients
 from backend.config import get_settings
 from backend.crypto import get_crypto
 from backend.database import init_db
@@ -25,12 +25,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title=APP_NAME,
     description="PAFarC - Programa de Aperfeiçoamento em Farmácia Clínica",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(consultations.router)
+app.include_router(documents.router)
 
 
 @app.exception_handler(RequestValidationError)
