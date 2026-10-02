@@ -227,9 +227,12 @@ def sidebar() -> None:
 def search_view() -> None:
     st.header("Buscar paciente")
     with st.form("search_form"):
-        query = st.text_input("Nome completo ou CPF", key="search_query")
+        query = st.text_input("Nome ou CPF", key="search_query")
         submitted = st.form_submit_button("Buscar", type="primary")
-    st.caption("A busca por nome considera o nome completo (sem diferenciar maiúsculas ou acentos).")
+    st.caption(
+        "Digite o nome (ou o início de cada nome, com pelo menos 3 letras — ex.: \"maria sant\") "
+        "ou o CPF completo. Maiúsculas e acentos não fazem diferença."
+    )
     if submitted:
         if not query.strip():
             st.warning("Informe o nome completo ou o CPF.")
