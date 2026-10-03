@@ -108,3 +108,21 @@ def test_deactivated_pharmacist_token_is_rejected(client, db, pharmacist):
 def test_sqlite_foreign_keys_enabled():
     with get_engine().connect() as connection:
         assert connection.execute(text("PRAGMA foreign_keys")).scalar() == 1
+
+
+def test_email_address_can_be_used_as_login(client, db):
+    create_pharmacist(
+        db, full_name="Farmacêutico Email", crf="CRF/RJ 00000", login=" Nome.Teste@Exemplo.com ",
+        password=PASSWORD,
+    )
+    response = client.post("/auth/login", data={"username": "NOME.TESTE@exemplo.com", "password": PASSWORD})
+    assert response.status_code == 200
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {response.json()['access_token']}"}).json()
+    assert me["login"] == "nome.teste@exemplo.com"
+    assert (me["full_name"], me["crf"]) == ("Farmacêutico Email", "CRF/RJ 00000")
+
+
+def test_invalid_logins_are_rejected(db):
+    for bad in ("ab", "with space@x.com", "acentuação", "a" * 51, "semi;colon"):
+        with pytest.raises(ValueError, match="Login must be"):
+            create_pharmacist(db, full_name="X", crf="CRF 1", login=bad, password=PASSWORD)

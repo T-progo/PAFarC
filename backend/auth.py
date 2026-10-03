@@ -20,7 +20,8 @@ from backend.security import (
     verify_password,
 )
 
-LOGIN_PATTERN = re.compile(r"^[a-z0-9._-]{3,50}$")
+# Simple usernames or e-mail addresses (e.g. "nome.sobrenome" or "nome@exemplo.com").
+LOGIN_PATTERN = re.compile(r"^[a-z0-9._+@-]{3,50}$")
 MIN_PASSWORD_LENGTH = 8
 
 # Brute-force protection: after MAX_FAILED_LOGINS wrong passwords for one login
@@ -77,7 +78,7 @@ def create_pharmacist(
     if not crf:
         raise ValueError("CRF is required.")
     if not LOGIN_PATTERN.fullmatch(login):
-        raise ValueError("Login must be 3-50 characters: a-z, 0-9, '.', '_' or '-'.")
+        raise ValueError("Login must be 3-50 characters: a-z, 0-9, '.', '_', '-', '+' or '@'.")
     if len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
     if db.scalar(select(Pharmacist.id).where(Pharmacist.login == login)) is not None:
