@@ -58,6 +58,31 @@ class PharmaTechAPI:
     def get_patient(self, patient_id: int) -> dict:
         return self._request("GET", f"/patients/{patient_id}")
 
+    # --- administration (administrators only; the API enforces it) ---------------------
+
+    def list_users(self) -> list[dict]:
+        return self._request("GET", "/admin/users")
+
+    def create_user(self, data: dict) -> dict:
+        return self._request("POST", "/admin/users", json=data)
+
+    def update_user(self, user_id: int, data: dict) -> dict:
+        return self._request("PATCH", f"/admin/users/{user_id}", json=data)
+
+    def set_user_active(self, user_id: int, active: bool) -> dict:
+        return self._request("POST", f"/admin/users/{user_id}/{'activate' if active else 'deactivate'}")
+
+    def reset_password(self, user_id: int, password: str) -> None:
+        self._request("POST", f"/admin/users/{user_id}/password", json={"password": password})
+
+    def get_establishment(self) -> dict:
+        return self._request("GET", "/admin/establishment")
+
+    def save_establishment(self, data: dict) -> dict:
+        return self._request("PUT", "/admin/establishment", json=data)
+
+    # --- clinical -------------------------------------------------------------------------
+
     def create_consultation(self, patient_id: int) -> dict:
         return self._request("POST", f"/patients/{patient_id}/consultations", json={})
 

@@ -22,6 +22,12 @@ ESTABLISHMENT = "PAFarC — Programa de Aperfeiçoamento em Farmácia Clínica"
 
 NAV_SEARCH = "Buscar paciente"
 NAV_REGISTER = "Cadastrar paciente"
+NAV_USERS = "Administração · Usuários"
+NAV_ESTABLISHMENT = "Administração · Estabelecimento"
+ADMIN_NAV = (NAV_USERS, NAV_ESTABLISHMENT)
+ROLE_LABELS = {"administrator": "Administrador", "pharmacist": "Farmacêutico(a)"}
+UFS = ("AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA",
+       "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO")
 
 st.set_page_config(page_title=f"{APP_NAME} · PAFarC", page_icon=str(PHARMATECH_LOGO), layout="wide")
 
@@ -216,12 +222,188 @@ def sidebar() -> None:
         st.image(str(PAFARC_LOGO), width="stretch")
         st.markdown(f"**{md(pharmacist['full_name'])}**  \n{md(pharmacist['crf'])}")
         st.divider()
-        st.radio("Menu", [NAV_SEARCH, NAV_REGISTER], key="nav", on_change=on_nav_change)
+        st.radio("Menu", menu_options(), key="nav", on_change=on_nav_change)
         st.divider()
         if st.button("Sair", key="logout", width="stretch"):
             if may_leave_consultation():
                 logout("Sessão encerrada.")
             st.rerun()
+
+
+def menu_options() -> list[str]:
+    """Clinical entries for clinical users, administration entries for administrators only.
+    (The API enforces the same rules; this only decides what is shown.)"""
+    user = st.session_state["pharmacist"]
+    options = [NAV_SEARCH, NAV_REGISTER] if user.get("clinical_access", True) else []
+    if user.get("is_admin"):
+        options += list(ADMIN_NAV)
+    return options
+
+
+def bump_admin_forms() -> None:
+    """New widget keys after a successful change, so the browser shows fresh forms."""
+    st.session_state["admin_gen"] = st.session_state.get("admin_gen", 0) + 1
+
+
+def users_view() -> None:
+    st.header("Usuários")
+    if flash := st.session_state.pop("flash", None):
+        st.success(flash)
+    try:
+        users = api().list_users()
+    except ApiError as exc:
+        show_api_error(exc)
+        return
+    gen = st.session_state.get("admin_gen", 0)
+    st.dataframe(
+        [{"Nome": u["full_name"], "CRF": u["crf"], "Login": u["login"], "Perfil": ROLE_LABELS.get(u["role"], u["role"]),
+          "Situação": "Ativo" if u["active"] else "Bloqueado"} for u in users],
+        hide_index=True, width="stretch",
+    )
+
+    with st.expander("Novo usuário"):
+        with st.form(f"user_new_{gen}"):
+            name = st.text_input("Nome completo", key=f"un_name_{gen}")
+            c1, c2 = st.columns([3, 1])
+            crf = c1.text_input("CRF (número)", key=f"un_crf_{gen}")
+            uf = c2.selectbox("UF", UFS, index=None, placeholder="UF", key=f"un_uf_{gen}")
+            login = st.text_input("Login / e-mail", key=f"un_login_{gen}")
+            role = st.selectbox("Perfil", list(ROLE_LABELS), index=1, format_func=ROLE_LABELS.get, key=f"un_role_{gen}")
+            p1, p2 = st.columns(2)
+            password = p1.text_input("Senha", type="password", key=f"un_pw_{gen}")
+            confirm = p2.text_input("Confirmar senha", type="password", key=f"un_pw2_{gen}")
+            submitted = st.form_submit_button("Criar usuário", type="primary")
+        if submitted:
+            if not all((name.strip(), crf.strip(), uf, login.strip(), password)):
+                st.warning("Preencha nome, CRF, UF, login e senha.")
+            elif password != confirm:
+                st.warning("As senhas não conferem.")
+            else:
+                try:
+                    api().create_user({"full_name": name, "crf": crf, "crf_uf": uf, "login": login,
+                                       "password": password, "role": role})
+                except ApiError as exc:
+                    show_api_error(exc)
+                else:
+                    st.session_state["flash"] = "Usuário criado."
+                    bump_admin_forms()
+                    st.rerun()
+
+    st.subheader("Editar usuário")
+    by_id = {u["id"]: u for u in users}
+    selected = st.selectbox("Usuário", list(by_id), index=None, placeholder="Selecione um usuário",
+                            format_func=lambda i: f"{by_id[i]['full_name']} ({by_id[i]['login']})",
+                            key=f"user_select_{gen}")
+    if selected is not None:
+        edit_user_panel(by_id[selected], gen)
+
+
+def edit_user_panel(user: dict, gen: int) -> None:
+    uid = user["id"]
+    is_self = uid == st.session_state["pharmacist"]["id"]
+    with st.form(f"user_edit_{uid}_{gen}"):
+        name = st.text_input("Nome completo", value=user["full_name"], key=f"ue_name_{uid}_{gen}")
+        c1, c2 = st.columns([3, 1])
+        crf = c1.text_input("CRF (número)", value=user["crf_number"], key=f"ue_crf_{uid}_{gen}")
+        uf_index = UFS.index(user["crf_uf"]) if user["crf_uf"] in UFS else None
+        uf = c2.selectbox("UF", UFS, index=uf_index, placeholder="UF", key=f"ue_uf_{uid}_{gen}")
+        login = st.text_input("Login / e-mail", value=user["login"], key=f"ue_login_{uid}_{gen}")
+        role = st.selectbox("Perfil", list(ROLE_LABELS), index=list(ROLE_LABELS).index(user["role"]),
+                            format_func=ROLE_LABELS.get, key=f"ue_role_{uid}_{gen}", disabled=is_self)
+        save = st.form_submit_button("Salvar alterações", type="primary")
+    if save:
+        changes = {}
+        if name.strip() != user["full_name"]:
+            changes["full_name"] = name
+        if crf.strip() != user["crf_number"] or uf != user["crf_uf"]:  # CRF rewritten only if changed
+            if not crf.strip() or not uf:
+                st.warning("Informe o número do CRF e a UF.")
+                return
+            changes.update({"crf": crf, "crf_uf": uf})
+        if login.strip().lower() != user["login"]:
+            changes["login"] = login
+        if role != user["role"]:
+            changes["role"] = role
+        if not changes:
+            st.info("Nenhuma alteração.")
+        else:
+            try:
+                api().update_user(uid, changes)
+            except ApiError as exc:
+                show_api_error(exc)
+                return
+            st.session_state["flash"] = "Usuário atualizado."
+            bump_admin_forms()
+            st.rerun()
+
+    status_col, password_col = st.columns(2)
+    with status_col:
+        st.markdown(f"**Situação:** {'Ativo' if user['active'] else 'Bloqueado'}")
+        if is_self:
+            st.caption("Você não pode bloquear o seu próprio usuário.")
+        else:
+            label = "Bloquear usuário" if user["active"] else "Reativar usuário"
+            if st.button(label, key=f"ue_toggle_{uid}_{gen}"):
+                try:
+                    api().set_user_active(uid, not user["active"])
+                except ApiError as exc:
+                    show_api_error(exc)
+                    return
+                st.session_state["flash"] = "Usuário bloqueado." if user["active"] else "Usuário reativado."
+                bump_admin_forms()
+                st.rerun()
+    with password_col:
+        with st.form(f"user_pw_{uid}_{gen}"):
+            new_pw = st.text_input("Nova senha", type="password", key=f"ue_pw_{uid}_{gen}")
+            confirm = st.text_input("Confirmar nova senha", type="password", key=f"ue_pw2_{uid}_{gen}")
+            reset = st.form_submit_button("Redefinir senha")
+        if reset:
+            if not new_pw or new_pw != confirm:
+                st.warning("As senhas não conferem.")
+                return
+            try:
+                api().reset_password(uid, new_pw)
+            except ApiError as exc:
+                show_api_error(exc)
+                return
+            st.session_state["flash"] = "Senha redefinida."
+            bump_admin_forms()
+            st.rerun()
+
+
+def establishment_view() -> None:
+    st.header("Estabelecimento")
+    if flash := st.session_state.pop("flash", None):
+        st.success(flash)
+    try:
+        est = api().get_establishment()
+    except ApiError as exc:
+        show_api_error(exc)
+        return
+    if est["source"] == "configuration":
+        st.info("Os dados abaixo vêm da configuração do servidor. Ao salvar, passam a ser mantidos aqui.")
+    else:
+        st.caption(f"Última atualização: {format_timestamp(est['updated_at'])}")
+    gen = st.session_state.get("admin_gen", 0)
+    with st.form(f"establishment_{gen}"):
+        name = st.text_input("Nome do estabelecimento", value=est["name"], key=f"es_name_{gen}")
+        cnpj = st.text_input("CNPJ", value=est["cnpj"], key=f"es_cnpj_{gen}")
+        address = st.text_input("Endereço", value=est["address"], key=f"es_address_{gen}")
+        phone = st.text_input("Telefone", value=est["phone"], key=f"es_phone_{gen}")
+        submitted = st.form_submit_button("Salvar", type="primary")
+    st.caption("Estes dados aparecem no cabeçalho dos novos documentos. Documentos já emitidos não são alterados.")
+    if submitted:
+        if not name.strip():
+            st.warning("Informe o nome do estabelecimento.")
+            return
+        try:
+            api().save_establishment({"name": name, "cnpj": cnpj, "address": address, "phone": phone})
+        except ApiError as exc:
+            show_api_error(exc)
+            return
+        st.session_state["flash"] = "Dados do estabelecimento salvos."
+        bump_admin_forms()
+        st.rerun()
 
 
 def search_view() -> None:
@@ -758,11 +940,21 @@ else:
     sidebar()
     st.markdown(f"## {APP_NAME}")
     st.caption(ESTABLISHMENT)
-    if "patient_id" in st.session_state and "consultation_id" in st.session_state:
+    user = st.session_state["pharmacist"]
+    nav = st.session_state.get("nav")
+    clinical = user.get("clinical_access", True)
+    if user.get("is_admin") and (nav in ADMIN_NAV or not clinical):
+        if nav == NAV_ESTABLISHMENT:
+            establishment_view()
+        else:
+            users_view()
+    elif not clinical:
+        st.info("Seu perfil não tem acesso às funções clínicas.")
+    elif "patient_id" in st.session_state and "consultation_id" in st.session_state:
         consultation_view(st.session_state["patient_id"], st.session_state["consultation_id"])
     elif "patient_id" in st.session_state:
         profile_view(st.session_state["patient_id"])
-    elif st.session_state.get("nav") == NAV_REGISTER:
+    elif nav == NAV_REGISTER:
         register_view()
     else:
         search_view()

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.auth import get_current_pharmacist
+from backend.auth import get_current_pharmacist, require_clinical
 from backend.database import get_db
 from backend.models import Consultation, ExamResult, Patient, Pharmacist, SoapRecord
 from backend.schemas import (
@@ -25,7 +25,11 @@ DB = Annotated[Session, Depends(get_db)]
 # Every route is nested under the patient, and every lookup checks that the
 # consultation (and exam) belongs to that patient, so records can never be
 # read or changed through another patient's context.
-router = APIRouter(prefix="/patients/{patient_id}/consultations", tags=["consultations"])
+router = APIRouter(
+    prefix="/patients/{patient_id}/consultations",
+    tags=["consultations"],
+    dependencies=[Depends(require_clinical)],
+)
 
 
 def _get_patient(db: Session, patient_id: int) -> Patient:

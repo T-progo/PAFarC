@@ -14,11 +14,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from backend.auth import get_current_pharmacist
+from backend.auth import get_current_pharmacist, require_clinical
 from backend.consultations import _get_consultation, _get_editable_consultation, _get_patient
 from backend.database import get_db
 from backend.models import GeneratedDocument, Pharmacist
-from backend.pdf import DocumentContext, DocumentPDF, Establishment, clean_text
+from backend.admin import effective_establishment
+from backend.pdf import DocumentContext, DocumentPDF, clean_text
 from backend.schemas import ExamRequestIn, PrescriptionIn, ReferralIn
 
 PRESCRIPTION = "prescription"
@@ -41,6 +42,7 @@ DB = Annotated[Session, Depends(get_db)]
 router = APIRouter(
     prefix="/patients/{patient_id}/consultations/{consultation_id}/documents",
     tags=["documents"],
+    dependencies=[Depends(require_clinical)],
 )
 
 
@@ -110,12 +112,12 @@ def _issue(
     patient = _get_patient(db, patient_id)
     consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
     context = DocumentContext(
-        establishment=Establishment.from_settings(),
+        establishment=effective_establishment(db),
         patient_name=patient.full_name,
         patient_date_of_birth=patient.date_of_birth,
         patient_cpf=patient.cpf,
         pharmacist_name=pharmacist.full_name,
-        pharmacist_crf=pharmacist.crf,
+        pharmacist_crf=pharmacist.crf_display,
         consultation_date=consultation.consultation_date,
         issued_at=datetime.now().astimezone(),
     )

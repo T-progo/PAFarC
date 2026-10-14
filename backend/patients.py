@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.auth import get_current_pharmacist
+from backend.auth import require_clinical
 from backend.crypto import DecryptionError, get_crypto
 from backend.database import get_db
 from backend.models import Patient, PatientNameToken
@@ -163,7 +163,7 @@ def verify_keys_match_existing_data(db: Session) -> None:
 router = APIRouter(
     prefix="/patients",
     tags=["patients"],
-    dependencies=[Depends(get_current_pharmacist)],
+    dependencies=[Depends(require_clinical)],
 )
 
 

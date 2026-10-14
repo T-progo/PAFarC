@@ -13,10 +13,48 @@ class PharmacistOut(BaseModel):
 
     id: int
     full_name: str
-    crf: str
+    crf: str = Field(validation_alias="crf_display")  # printable "CRF/UF number"
+    crf_number: str
+    crf_uf: str | None
     login: str
+    role: str
+    is_admin: bool
+    clinical_access: bool
     active: bool
     created_at: datetime
+
+
+class UserCreateIn(BaseModel):
+    full_name: str = Field(max_length=200)
+    crf: str = Field(max_length=30)
+    crf_uf: str | None = Field(default=None, max_length=2)
+    login: str = Field(max_length=50)
+    password: str = Field(max_length=200)
+    role: str = "pharmacist"
+
+
+class UserUpdateIn(BaseModel):
+    full_name: str | None = Field(default=None, max_length=200)
+    crf: str | None = Field(default=None, max_length=30)
+    crf_uf: str | None = Field(default=None, max_length=2)
+    login: str | None = Field(default=None, max_length=50)
+    role: str | None = None
+
+
+class PasswordResetIn(BaseModel):
+    password: str = Field(max_length=200)
+
+
+class EstablishmentIn(BaseModel):
+    name: str = Field(max_length=200)
+    cnpj: str = Field(default="", max_length=30)
+    address: str = Field(default="", max_length=300)
+    phone: str = Field(default="", max_length=40)
+
+
+class EstablishmentOut(EstablishmentIn):
+    source: str  # "database" (saved by an administrator) or "configuration" (.env fallback)
+    updated_at: datetime | None = None
 
 
 class PatientCreate(BaseModel):
@@ -48,7 +86,7 @@ class PharmacistSummary(BaseModel):
 
     id: int
     full_name: str
-    crf: str
+    crf: str = Field(validation_alias="crf_display")
 
 
 class ConsultationCreate(BaseModel):

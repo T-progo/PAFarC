@@ -58,7 +58,7 @@ All settings are environment variables; the backend also reads `.env` from its w
 | `PHARMATECH_BLIND_INDEX_KEY` | yes | HMAC key for CPF/name search (≥ 32 chars) |
 | `PHARMATECH_ACCESS_TOKEN_EXPIRE_MINUTES` | – | Login lifetime (default 60; `.env.example` suggests 480 = one shift) |
 | `PHARMATECH_ESTABLISHMENT_NAME` | – | Defaults to "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC" |
-| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` / `_CITY` | – | Printed on documents; omitted when empty |
+| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` / `_CITY` | – | Printed on documents; omitted when empty. Name/CNPJ/address/phone are only a fallback until an administrator saves them in Administração · Estabelecimento |
 | `PHARMATECH_API_URL` | – | UI only: backend address (default `http://127.0.0.1:8000`) |
 
 The backend refuses to start if a required key is missing or invalid.
@@ -70,25 +70,33 @@ The backend refuses to start if a required key is missing or invalid.
 > breaking search and duplicate-CPF detection. Keep a secure copy of both keys (e.g. a password manager or sealed
 > offline copy), stored **separately** from database backups. Never generate new keys for a database that has data.
 
-## First pharmacist / account administration
+## Users, roles and administration
 
-There is no public registration. Create accounts on the server (the password is asked interactively):
+There are two roles:
+
+- **pharmacist**: the clinical features (patients, SOAP, exams, documents).
+- **administrator**: Administração · Usuários (list, create, edit, block/reactivate users, reset passwords)
+  and Administração · Estabelecimento (name, CNPJ, address, phone printed on new documents). All `/admin`
+  routes return 403 to non-administrators. Whether administrators also keep clinical access is set by
+  `CLINICAL_ROLES` in `backend/models.py` (currently: yes).
+
+Safety rules: an administrator cannot block or demote themselves, and the last active administrator cannot be
+blocked or demoted. Blocking takes effect immediately (login and open sessions are refused). Passwords are only
+stored as bcrypt hashes; an administrator assigns a new password directly (no e-mail recovery).
+
+Accounts are created by an administrator in the app, or on the server (the password is asked interactively):
 
 ```bash
-python -m scripts.create_pharmacist --full-name "Nome Completo" --crf "CRF-UF 00000" --login nome.sobrenome
+# first administrator
+python -m scripts.create_pharmacist --full-name "Nome Completo" --crf 12345 --uf RJ --login nome@exemplo.com --role administrator
+# pharmacist
+python -m scripts.create_pharmacist --full-name "Nome Completo" --crf 12345 --uf RJ --login nome@exemplo.com
+# change the role of an existing account
+python -m scripts.create_pharmacist --set-role nome@exemplo.com --role administrator
 ```
 
-Deactivate a pharmacist (they can no longer log in; their records remain):
-
-```bash
-python -c "from backend.database import get_sessionmaker; from backend.models import Pharmacist; db=get_sessionmaker()(); p=db.query(Pharmacist).filter_by(login='LOGIN').one(); p.active=False; db.commit()"
-```
-
-Reset a password:
-
-```bash
-python -c "from getpass import getpass; from backend.database import get_sessionmaker; from backend.models import Pharmacist; from backend.security import hash_password; db=get_sessionmaker()(); p=db.query(Pharmacist).filter_by(login='LOGIN').one(); p.password_hash=hash_password(getpass('Nova senha: ')); db.commit()"
-```
+CRF and UF are stored separately and printed as `CRF/UF número` (e.g. `CRF/RJ 16906`). Accounts created before
+this keep their original combined CRF text (shown exactly as before); their UF is extracted automatically.
 
 ## Running locally (development)
 
@@ -251,6 +259,11 @@ Tests use a temporary database and test-only keys; they never touch the real dat
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Status check |
+| GET / POST | `/admin/users` | Administrator: list / create users |
+| PATCH | `/admin/users/{id}` | Administrator: edit name, CRF/UF, login, role |
+| POST | `/admin/users/{id}/deactivate`, `/activate` | Administrator: block / activate or reactivate |
+| POST | `/admin/users/{id}/password` | Administrator: assign a new password |
+| GET / PUT | `/admin/establishment` | Administrator: establishment printed on new documents |
 | POST | `/auth/login` | Form fields `username`, `password` → bearer token |
 | GET | `/auth/me` | Current pharmacist |
 | POST | `/patients` | Register a patient |
