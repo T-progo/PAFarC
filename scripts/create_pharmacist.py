@@ -40,6 +40,8 @@ def main() -> None:
     parser.add_argument("--uf", help="UF of the CRF, e.g. RJ")
     parser.add_argument("--login")
     parser.add_argument("--role", choices=ROLES, default=None)
+    parser.add_argument("--establishment", type=int, default=None,
+                        help="establishment id for a pharmacist (optional when only one establishment exists)")
     parser.add_argument("--set-role", metavar="LOGIN", help="change the role of an existing account")
     args = parser.parse_args()
 
@@ -71,7 +73,7 @@ def main() -> None:
         try:
             pharmacist = create_pharmacist(
                 db, full_name=full_name, crf=crf, crf_uf=args.uf, login=login, password=password,
-                role=args.role or ROLE_PHARMACIST,
+                role=args.role or ROLE_PHARMACIST, establishment_id=args.establishment,
             )
         except ValueError as exc:
             sys.exit(f"Error: {exc}")

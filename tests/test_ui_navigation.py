@@ -19,7 +19,7 @@ def _menu_for(user: dict) -> list[str]:
 
 def test_administrator_menu_shows_only_administration():
     options, at = _menu_for({"is_admin": True, "clinical_access": False})
-    assert options == ["Administração · Usuários", "Administração · Estabelecimento"]
+    assert options == ["Administração · Usuários", "Administração · Estabelecimentos"]
     assert any(b.label == "Sair" for b in at.button)
     assert "search_query" not in [w.key for w in at.text_input]  # no patient search on the admin screen
 

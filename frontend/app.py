@@ -23,7 +23,7 @@ ESTABLISHMENT = "PAFarC — Programa de Aperfeiçoamento em Farmácia Clínica"
 NAV_SEARCH = "Buscar paciente"
 NAV_REGISTER = "Cadastrar paciente"
 NAV_USERS = "Administração · Usuários"
-NAV_ESTABLISHMENT = "Administração · Estabelecimento"
+NAV_ESTABLISHMENT = "Administração · Estabelecimentos"
 ADMIN_NAV = (NAV_USERS, NAV_ESTABLISHMENT)
 ROLE_LABELS = {"administrator": "Administrador", "pharmacist": "Farmacêutico(a)"}
 UFS = ("AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA",
@@ -245,53 +245,67 @@ def bump_admin_forms() -> None:
     st.session_state["admin_gen"] = st.session_state.get("admin_gen", 0) + 1
 
 
+def establishment_label(est: dict) -> str:
+    return f"{est['name']} (CNPJ {est['cnpj']})" if est.get("cnpj") else est["name"]
+
+
 def users_view() -> None:
     st.header("Usuários")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     try:
         users = api().list_users()
+        establishments = api().list_establishments()
     except ApiError as exc:
         show_api_error(exc)
         return
+    est_by_id = {e["id"]: e for e in establishments}
     gen = st.session_state.get("admin_gen", 0)
     st.dataframe(
-        [{"Nome": u["full_name"], "CRF": u["crf"] or "—", "Login": u["login"], "Perfil": ROLE_LABELS.get(u["role"], u["role"]),
+        [{"Nome": u["full_name"], "CRF": u["crf"] or "—", "Login": u["login"],
+          "Perfil": ROLE_LABELS.get(u["role"], u["role"]),
+          "Estabelecimento": u["establishment_name"] or "—",
           "Situação": "Ativo" if u["active"] else "Bloqueado"} for u in users],
         hide_index=True, width="stretch",
     )
 
     st.subheader("Novo usuário")
-    # A plain section (not a collapsible panel), so validation messages are always visible.
-    with st.container():
-        with st.form(f"user_new_{gen}"):
-            name = st.text_input("Nome completo", key=f"un_name_{gen}")
-            role = st.selectbox("Perfil", list(ROLE_LABELS), index=1, format_func=ROLE_LABELS.get, key=f"un_role_{gen}")
+    # Outside the form so the fields below follow the chosen profile.
+    role = st.radio("Perfil do novo usuário", list(ROLE_LABELS), index=1, format_func=ROLE_LABELS.get,
+                    horizontal=True, key=f"un_role_{gen}")
+    is_pharmacist = role == "pharmacist"
+    with st.form(f"user_new_{gen}"):
+        name = st.text_input("Nome completo", key=f"un_name_{gen}")
+        crf = uf = est = None
+        if is_pharmacist:
             c1, c2 = st.columns([3, 1])
             crf = c1.text_input("CRF (número)", key=f"un_crf_{gen}")
             uf = c2.selectbox("UF", UFS, index=None, placeholder="UF", key=f"un_uf_{gen}")
-            st.caption("CRF e UF são obrigatórios para farmacêuticos e opcionais para administradores.")
-            login = st.text_input("Login / e-mail", key=f"un_login_{gen}")
-            p1, p2 = st.columns(2)
-            password = p1.text_input("Senha", type="password", key=f"un_pw_{gen}")
-            confirm = p2.text_input("Confirmar senha", type="password", key=f"un_pw2_{gen}")
-            submitted = st.form_submit_button("Criar usuário", type="primary")
-        if submitted:
-            needs_crf = role == "pharmacist"
-            if not all((name.strip(), login.strip(), password)) or (needs_crf and not (crf.strip() and uf)):
-                st.warning("Preencha nome, login e senha" + (", CRF e UF." if needs_crf else "."))
-            elif password != confirm:
-                st.warning("As senhas não conferem.")
+            est = st.selectbox("Estabelecimento", list(est_by_id), index=None, placeholder="Selecione o estabelecimento",
+                               format_func=lambda i: establishment_label(est_by_id[i]), key=f"un_est_{gen}")
+        login = st.text_input("Login / e-mail", key=f"un_login_{gen}")
+        p1, p2 = st.columns(2)
+        password = p1.text_input("Senha", type="password", key=f"un_pw_{gen}")
+        confirm = p2.text_input("Confirmar senha", type="password", key=f"un_pw2_{gen}")
+        submitted = st.form_submit_button("Criar usuário", type="primary")
+    if submitted:
+        if not all((name.strip(), login.strip(), password)) or (
+                is_pharmacist and not ((crf or "").strip() and uf and est is not None)):
+            st.warning("Preencha nome, login e senha" + (", CRF, UF e estabelecimento." if is_pharmacist else "."))
+        elif password != confirm:
+            st.warning("As senhas não conferem.")
+        else:
+            payload = {"full_name": name, "login": login, "password": password, "role": role}
+            if is_pharmacist:
+                payload.update({"crf": crf, "crf_uf": uf, "establishment_id": est})
+            try:
+                api().create_user(payload)
+            except ApiError as exc:
+                show_api_error(exc)
             else:
-                try:
-                    api().create_user({"full_name": name, "crf": crf, "crf_uf": uf, "login": login,
-                                       "password": password, "role": role})
-                except ApiError as exc:
-                    show_api_error(exc)
-                else:
-                    st.session_state["flash"] = "Usuário criado."
-                    bump_admin_forms()
-                    st.rerun()
+                st.session_state["flash"] = "Usuário criado."
+                bump_admin_forms()
+                st.rerun()
 
     st.subheader("Editar usuário")
     by_id = {u["id"]: u for u in users}
@@ -299,35 +313,46 @@ def users_view() -> None:
                             format_func=lambda i: f"{by_id[i]['full_name']} ({by_id[i]['login']})",
                             key=f"user_select_{gen}")
     if selected is not None:
-        edit_user_panel(by_id[selected], gen)
+        edit_user_panel(by_id[selected], gen, est_by_id)
 
 
-def edit_user_panel(user: dict, gen: int) -> None:
+def edit_user_panel(user: dict, gen: int, est_by_id: dict) -> None:
     uid = user["id"]
     is_self = uid == st.session_state["pharmacist"]["id"]
+    role = st.radio("Perfil", list(ROLE_LABELS), index=list(ROLE_LABELS).index(user["role"]),
+                    format_func=ROLE_LABELS.get, horizontal=True, key=f"ue_role_{uid}_{gen}", disabled=is_self)
+    is_pharmacist = role == "pharmacist"
     with st.form(f"user_edit_{uid}_{gen}"):
         name = st.text_input("Nome completo", value=user["full_name"], key=f"ue_name_{uid}_{gen}")
-        c1, c2 = st.columns([3, 1])
-        crf = c1.text_input("CRF (número)", value=user["crf_number"], key=f"ue_crf_{uid}_{gen}")
-        uf_index = UFS.index(user["crf_uf"]) if user["crf_uf"] in UFS else None
-        uf = c2.selectbox("UF", UFS, index=uf_index, placeholder="UF", key=f"ue_uf_{uid}_{gen}")
+        crf = uf = est = None
+        if is_pharmacist:
+            c1, c2 = st.columns([3, 1])
+            crf = c1.text_input("CRF (número)", value=user["crf_number"], key=f"ue_crf_{uid}_{gen}")
+            uf_index = UFS.index(user["crf_uf"]) if user["crf_uf"] in UFS else None
+            uf = c2.selectbox("UF", UFS, index=uf_index, placeholder="UF", key=f"ue_uf_{uid}_{gen}")
+            est_ids = list(est_by_id)
+            est_index = est_ids.index(user["establishment_id"]) if user["establishment_id"] in est_ids else None
+            est = st.selectbox("Estabelecimento", est_ids, index=est_index, placeholder="Selecione o estabelecimento",
+                               format_func=lambda i: establishment_label(est_by_id[i]), key=f"ue_est_{uid}_{gen}")
         login = st.text_input("Login / e-mail", value=user["login"], key=f"ue_login_{uid}_{gen}")
-        role = st.selectbox("Perfil", list(ROLE_LABELS), index=list(ROLE_LABELS).index(user["role"]),
-                            format_func=ROLE_LABELS.get, key=f"ue_role_{uid}_{gen}", disabled=is_self)
         save = st.form_submit_button("Salvar alterações", type="primary")
     if save:
         changes = {}
         if name.strip() != user["full_name"]:
             changes["full_name"] = name
-        if crf.strip() != user["crf_number"] or uf != user["crf_uf"]:  # CRF rewritten only if changed
-            if role == "pharmacist" and (not crf.strip() or not uf):
-                st.warning("Informe o número do CRF e a UF.")
-                return
-            changes.update({"crf": crf, "crf_uf": uf})
-        if login.strip().lower() != user["login"]:
-            changes["login"] = login
         if role != user["role"]:
             changes["role"] = role
+        if is_pharmacist:
+            if not (crf or "").strip() or not uf or est is None:
+                st.warning("Informe o número do CRF, a UF e o estabelecimento.")
+                return
+            # CRF rewritten only if changed (or needed because the profile changes)
+            if crf.strip() != user["crf_number"] or uf != user["crf_uf"] or (role != user["role"] and not user["crf"]):
+                changes.update({"crf": crf, "crf_uf": uf})
+            if est != user["establishment_id"]:
+                changes["establishment_id"] = est
+        if login.strip().lower() != user["login"]:
+            changes["login"] = login
         if not changes:
             st.info("Nenhuma alteração.")
         else:
@@ -375,39 +400,74 @@ def edit_user_panel(user: dict, gen: int) -> None:
             st.rerun()
 
 
-def establishment_view() -> None:
-    st.header("Estabelecimento")
+def establishments_view() -> None:
+    st.header("Estabelecimentos")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     try:
-        est = api().get_establishment()
+        establishments = api().list_establishments()
     except ApiError as exc:
         show_api_error(exc)
         return
-    if est["source"] == "configuration":
-        st.info("Os dados abaixo vêm da configuração do servidor. Ao salvar, passam a ser mantidos aqui.")
-    else:
-        st.caption(f"Última atualização: {format_timestamp(est['updated_at'])}")
     gen = st.session_state.get("admin_gen", 0)
-    with st.form(f"establishment_{gen}"):
-        name = st.text_input("Nome do estabelecimento", value=est["name"], key=f"es_name_{gen}")
-        cnpj = st.text_input("CNPJ", value=est["cnpj"], key=f"es_cnpj_{gen}")
-        address = st.text_input("Endereço", value=est["address"], key=f"es_address_{gen}")
-        phone = st.text_input("Telefone", value=est["phone"], key=f"es_phone_{gen}")
-        submitted = st.form_submit_button("Salvar", type="primary")
-    st.caption("Estes dados aparecem no cabeçalho dos novos documentos. Documentos já emitidos não são alterados.")
+    st.dataframe(
+        [{"Nome": e["name"], "CNPJ": e["cnpj"] or "—", "Endereço": e["address"] or "—",
+          "Telefone": e["phone"] or "—"} for e in establishments],
+        hide_index=True, width="stretch",
+    )
+    st.caption("O estabelecimento vinculado a cada farmacêutico aparece no cabeçalho dos novos documentos "
+               "emitidos por ele. Documentos já emitidos não são alterados.")
+
+    st.subheader("Novo estabelecimento")
+    with st.form(f"est_new_{gen}"):
+        name = st.text_input("Nome do estabelecimento", key=f"en_name_{gen}")
+        cnpj = st.text_input("CNPJ", placeholder="00.000.000/0000-00", key=f"en_cnpj_{gen}")
+        address = st.text_input("Endereço completo", key=f"en_address_{gen}")
+        phone = st.text_input("Telefone", key=f"en_phone_{gen}")
+        submitted = st.form_submit_button("Criar estabelecimento", type="primary")
     if submitted:
         if not name.strip():
             st.warning("Informe o nome do estabelecimento.")
-            return
-        try:
-            api().save_establishment({"name": name, "cnpj": cnpj, "address": address, "phone": phone})
-        except ApiError as exc:
-            show_api_error(exc)
-            return
-        st.session_state["flash"] = "Dados do estabelecimento salvos."
-        bump_admin_forms()
-        st.rerun()
+        else:
+            try:
+                api().create_establishment({"name": name, "cnpj": cnpj, "address": address, "phone": phone})
+            except ApiError as exc:
+                show_api_error(exc)
+            else:
+                st.session_state["flash"] = "Estabelecimento criado."
+                bump_admin_forms()
+                st.rerun()
+
+    st.subheader("Editar estabelecimento")
+    by_id = {e["id"]: e for e in establishments}
+    selected = st.selectbox("Estabelecimento", list(by_id), index=None, placeholder="Selecione um estabelecimento",
+                            format_func=lambda i: establishment_label(by_id[i]), key=f"est_select_{gen}")
+    if selected is None:
+        return
+    current = by_id[selected]
+    with st.form(f"est_edit_{selected}_{gen}"):
+        values = {
+            "name": st.text_input("Nome do estabelecimento", value=current["name"], key=f"ee_name_{selected}_{gen}"),
+            "cnpj": st.text_input("CNPJ", value=current["cnpj"], key=f"ee_cnpj_{selected}_{gen}"),
+            "address": st.text_input("Endereço completo", value=current["address"], key=f"ee_address_{selected}_{gen}"),
+            "phone": st.text_input("Telefone", value=current["phone"], key=f"ee_phone_{selected}_{gen}"),
+        }
+        save = st.form_submit_button("Salvar alterações", type="primary")
+    if save:
+        changes = {k: v for k, v in values.items() if v.strip() != (current[k] or "")}
+        if not values["name"].strip():
+            st.warning("Informe o nome do estabelecimento.")
+        elif not changes:
+            st.info("Nenhuma alteração.")
+        else:
+            try:
+                api().update_establishment(selected, changes)
+            except ApiError as exc:
+                show_api_error(exc)
+                return
+            st.session_state["flash"] = "Estabelecimento atualizado."
+            bump_admin_forms()
+            st.rerun()
 
 
 def search_view() -> None:
@@ -949,7 +1009,7 @@ else:
     clinical = user.get("clinical_access", True)
     if user.get("is_admin") and (nav in ADMIN_NAV or not clinical):
         if nav == NAV_ESTABLISHMENT:
-            establishment_view()
+            establishments_view()
         else:
             users_view()
     elif not clinical:

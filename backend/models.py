@@ -59,6 +59,14 @@ class Pharmacist(Base):
     # UF of the CRF. Older accounts keep their original combined text in `crf`
     # (e.g. "CRF/RJ 16906"); new/edited accounts store only the number in `crf`.
     crf_uf: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    # Establishment printed on this pharmacist's new documents (administrators: none).
+    establishment_id: Mapped[int | None] = mapped_column(ForeignKey("establishments.id"), nullable=True)
+
+    establishment: Mapped["Establishment | None"] = relationship()
+
+    @property
+    def establishment_name(self) -> str | None:
+        return self.establishment.name if self.establishment is not None else None
 
     @property
     def is_admin(self) -> bool:
@@ -190,9 +198,25 @@ class GeneratedDocument(Base):
         return self.pdf_size is not None
 
 
+class Establishment(Base):
+    """An establishment managed by administrators. Each pharmacist is linked to one; it is
+    used for the header of that pharmacist's new documents (clinical data is not split by
+    establishment)."""
+
+    __tablename__ = "establishments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    cnpj: Mapped[str] = mapped_column(String(30), default="")
+    address: Mapped[str] = mapped_column(String(300), default="")
+    phone: Mapped[str] = mapped_column(String(40), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class EstablishmentSettings(Base):
-    """The single establishment record (id=1) printed on new documents. Until an
-    administrator saves it, the values from the server configuration (.env) are used."""
+    """Legacy single establishment record (before multiple establishments). Kept unchanged
+    as the migration source and for rollback; no longer used for new documents."""
 
     __tablename__ = "establishment_settings"
 

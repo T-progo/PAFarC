@@ -6,7 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from backend import admin, auth, consultations, documents, patients
+from backend import admin, auth, consultations, documents, establishments, patients
 from backend.config import get_settings
 from backend.crypto import get_crypto
 from backend.database import get_sessionmaker, init_db
@@ -23,6 +23,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         patients.verify_keys_match_existing_data(db)  # fail fast on keys from another database
         patients.backfill_name_tokens(db)  # partial-search tokens for older records
         auth.backfill_crf_uf(db)  # separate UF for accounts created before it existed
+        establishments.migrate_legacy_establishment(db)  # one-time move to multiple establishments
     yield
 
 

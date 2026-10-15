@@ -58,7 +58,7 @@ All settings are environment variables; the backend also reads `.env` from its w
 | `PHARMATECH_BLIND_INDEX_KEY` | yes | HMAC key for CPF/name search (≥ 32 chars) |
 | `PHARMATECH_ACCESS_TOKEN_EXPIRE_MINUTES` | – | Login lifetime (default 60; `.env.example` suggests 480 = one shift) |
 | `PHARMATECH_ESTABLISHMENT_NAME` | – | Defaults to "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC" |
-| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` / `_CITY` | – | Printed on documents; omitted when empty. Name/CNPJ/address/phone are only a fallback until an administrator saves them in Administração · Estabelecimento |
+| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` / `_CITY` | – | Used once to create the first establishment (migration); `_CITY` is still printed in the date line of every document |
 | `PHARMATECH_API_URL` | – | UI only: backend address (default `http://127.0.0.1:8000`) |
 
 The backend refuses to start if a required key is missing or invalid.
@@ -76,8 +76,8 @@ There are two roles:
 
 - **pharmacist**: the clinical features (patients, SOAP, exams, documents).
 - **administrator**: Administração · Usuários (list, create, edit, block/reactivate users, reset passwords)
-  and Administração · Estabelecimento (name, CNPJ, address, phone printed on new documents). All `/admin`
-  routes return 403 to non-administrators.
+  and Administração · Estabelecimentos (create/edit establishments: name, CNPJ, full address, phone). All
+  `/admin` routes return 403 to non-administrators.
 
 The roles are strictly separate: administrators cannot use the clinical features (every patient,
 consultation and document route returns 403 to them) and pharmacists cannot use the administration.
@@ -93,12 +93,26 @@ Accounts are created by an administrator in the app, or on the server (the passw
 # first administrator (no CRF needed)
 python -m scripts.create_pharmacist --full-name "Nome Completo" --login nome@exemplo.com --role administrator
 # pharmacist
-python -m scripts.create_pharmacist --full-name "Nome Completo" --crf 12345 --uf RJ --login nome@exemplo.com
+python -m scripts.create_pharmacist --full-name "Nome Completo" --crf 12345 --uf RJ --login nome@exemplo.com --establishment 1
+# (--establishment may be omitted while only one establishment exists)
 # change the role of an existing account
 python -m scripts.create_pharmacist --set-role nome@exemplo.com --role administrator
 ```
 
-Pharmacists must have a CRF and its UF; administrators may have none (they are not necessarily pharmacists).
+Pharmacists must have a CRF, its UF and an establishment; administrators have none of these (they are not
+necessarily pharmacists).
+
+### Establishments
+
+Each pharmacist is linked to exactly one establishment, chosen and changed only by an administrator. New
+documents issued by a pharmacist carry **that pharmacist's establishment** in the header (name, CNPJ, address,
+phone); nothing in the request can override it, and a pharmacist without an establishment cannot issue documents.
+Already issued documents are stored and reprinted exactly as issued. Patients, consultations and documents are
+**not** separated by establishment: all pharmacists share the same clinical data. Establishments are not deleted.
+
+On the first start after this change, the establishment then in effect (the record saved in the former
+single-establishment screen, otherwise the `.env` values) becomes the first establishment and every existing
+pharmacist is linked to it. The former `establishment_settings` table is left untouched.
 CRF and UF are stored separately and printed as `CRF/UF número` (e.g. `CRF/RJ 16906`). Accounts created before
 this keep their original combined CRF text (shown exactly as before); their UF is extracted automatically.
 
@@ -267,7 +281,8 @@ Tests use a temporary database and test-only keys; they never touch the real dat
 | PATCH | `/admin/users/{id}` | Administrator: edit name, CRF/UF, login, role |
 | POST | `/admin/users/{id}/deactivate`, `/activate` | Administrator: block / activate or reactivate |
 | POST | `/admin/users/{id}/password` | Administrator: assign a new password |
-| GET / PUT | `/admin/establishment` | Administrator: establishment printed on new documents |
+| GET / POST | `/admin/establishments` | Administrator: list / create establishments |
+| PATCH | `/admin/establishments/{id}` | Administrator: edit an establishment |
 | POST | `/auth/login` | Form fields `username`, `password` → bearer token |
 | GET | `/auth/me` | Current pharmacist |
 | POST | `/patients` | Register a patient |

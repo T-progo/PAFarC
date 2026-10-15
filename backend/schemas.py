@@ -20,6 +20,8 @@ class PharmacistOut(BaseModel):
     role: str
     is_admin: bool
     clinical_access: bool
+    establishment_id: int | None
+    establishment_name: str | None
     active: bool
     created_at: datetime
 
@@ -31,6 +33,7 @@ class UserCreateIn(BaseModel):
     login: str = Field(max_length=50)
     password: str = Field(max_length=200)
     role: str = "pharmacist"
+    establishment_id: int | None = None  # required for pharmacists
 
 
 class UserUpdateIn(BaseModel):
@@ -39,6 +42,7 @@ class UserUpdateIn(BaseModel):
     crf_uf: str | None = Field(default=None, max_length=2)
     login: str | None = Field(default=None, max_length=50)
     role: str | None = None
+    establishment_id: int | None = None
 
 
 class PasswordResetIn(BaseModel):
@@ -52,9 +56,19 @@ class EstablishmentIn(BaseModel):
     phone: str = Field(default="", max_length=40)
 
 
+class EstablishmentUpdateIn(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    cnpj: str | None = Field(default=None, max_length=30)
+    address: str | None = Field(default=None, max_length=300)
+    phone: str | None = Field(default=None, max_length=40)
+
+
 class EstablishmentOut(EstablishmentIn):
-    source: str  # "database" (saved by an administrator) or "configuration" (.env fallback)
-    updated_at: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+    updated_at: datetime
 
 
 class PatientCreate(BaseModel):

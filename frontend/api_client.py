@@ -75,11 +75,14 @@ class PharmaTechAPI:
     def reset_password(self, user_id: int, password: str) -> None:
         self._request("POST", f"/admin/users/{user_id}/password", json={"password": password})
 
-    def get_establishment(self) -> dict:
-        return self._request("GET", "/admin/establishment")
+    def list_establishments(self) -> list[dict]:
+        return self._request("GET", "/admin/establishments")
 
-    def save_establishment(self, data: dict) -> dict:
-        return self._request("PUT", "/admin/establishment", json=data)
+    def create_establishment(self, data: dict) -> dict:
+        return self._request("POST", "/admin/establishments", json=data)
+
+    def update_establishment(self, establishment_id: int, data: dict) -> dict:
+        return self._request("PATCH", f"/admin/establishments/{establishment_id}", json=data)
 
     # --- clinical -------------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-"""Administration (administrators only): user management and the establishment record.
+"""Administration (administrators only): user management and establishments.
 
 Every route requires an active administrator (403 for pharmacists). Passwords are only
 ever stored as bcrypt hashes and never returned.
@@ -21,19 +21,22 @@ from backend.auth import (
     validate_role,
 )
 from backend.database import get_db
-from backend.models import ROLE_ADMINISTRATOR, EstablishmentSettings, Pharmacist
-from backend.pdf import Establishment, clean_text
+from backend.establishments import (
+    DuplicateCNPJError,
+    create_establishment,
+    update_establishment,
+)
+from backend.models import ROLE_ADMINISTRATOR, ROLE_PHARMACIST, Establishment, Pharmacist
 from backend.schemas import (
     EstablishmentIn,
     EstablishmentOut,
+    EstablishmentUpdateIn,
     PasswordResetIn,
     PharmacistOut,
     UserCreateIn,
     UserUpdateIn,
 )
 from backend.security import hash_password
-
-ESTABLISHMENT_ID = 1
 
 Admin = Annotated[Pharmacist, Depends(require_admin)]
 DB = Annotated[Session, Depends(get_db)]
@@ -76,16 +79,6 @@ def set_role(db: Session, user: Pharmacist, role: str, actor: Pharmacist | None 
     return user
 
 
-def effective_establishment(db: Session) -> Establishment:
-    """Establishment printed on new documents: the saved record, else the .env values."""
-    configured = Establishment.from_settings()
-    row = db.get(EstablishmentSettings, ESTABLISHMENT_ID)
-    if row is None:
-        return configured
-    return Establishment(name=row.name, cnpj=row.cnpj, address=row.address, phone=row.phone,
-                         city=configured.city)
-
-
 # --- helpers -------------------------------------------------------------------------------
 
 def _get_user(db: Session, user_id: int) -> Pharmacist:
@@ -96,8 +89,8 @@ def _get_user(db: Session, user_id: int) -> Pharmacist:
 
 
 def _bad_request(exc: ValueError) -> HTTPException:
-    code = status.HTTP_409_CONFLICT if isinstance(exc, AdminRuleError) or "already in use" in str(exc) else 422
-    return HTTPException(status_code=code, detail=str(exc))
+    conflict = isinstance(exc, (AdminRuleError, DuplicateCNPJError)) or "already in use" in str(exc)
+    return HTTPException(status_code=status.HTTP_409_CONFLICT if conflict else 422, detail=str(exc))
 
 
 # --- users -----------------------------------------------------------------------------------
@@ -109,10 +102,12 @@ def list_users(db: DB) -> list[Pharmacist]:
 
 @router.post("/users", response_model=PharmacistOut, status_code=status.HTTP_201_CREATED)
 def create_user(data: UserCreateIn, db: DB) -> Pharmacist:
+    if data.role == ROLE_PHARMACIST and data.establishment_id is None:
+        raise HTTPException(status_code=422, detail="Selecione o estabelecimento do farmacêutico.")
     try:
         return create_pharmacist(
             db, full_name=data.full_name, crf=data.crf, crf_uf=data.crf_uf, login=data.login,
-            password=data.password, role=data.role,
+            password=data.password, role=data.role, establishment_id=data.establishment_id,
         )
     except ValueError as exc:
         raise _bad_request(exc) from None
@@ -140,12 +135,29 @@ def update_user(user_id: int, data: UserUpdateIn, db: DB, admin: Admin) -> Pharm
             validate_role(data.role)
             check_admin_rules(db, user, new_role=data.role, new_active=user.active, actor=admin)
             user.role = data.role
+        _apply_establishment(db, user, data)
     except ValueError as exc:
         db.rollback()
         raise _bad_request(exc) from None
     db.commit()
     db.refresh(user)
     return user
+
+
+def _apply_establishment(db: Session, user: Pharmacist, data: UserUpdateIn) -> None:
+    """Pharmacists must stay linked to an existing establishment; administrators are unlinked."""
+    given = "establishment_id" in data.model_fields_set
+    if user.role == ROLE_ADMINISTRATOR:
+        if given and data.establishment_id is not None:
+            raise ValueError("Administradores não são vinculados a estabelecimentos.")
+        user.establishment_id = None
+        return
+    if given:
+        if data.establishment_id is None or db.get(Establishment, data.establishment_id) is None:
+            raise ValueError("Selecione um estabelecimento válido para o farmacêutico.")
+        user.establishment_id = data.establishment_id
+    elif user.establishment_id is None:
+        raise ValueError("Selecione o estabelecimento do farmacêutico.")
 
 
 @router.post("/users/{user_id}/deactivate", response_model=PharmacistOut)
@@ -186,35 +198,28 @@ def reset_password(user_id: int, data: PasswordResetIn, db: DB) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# --- establishment -------------------------------------------------------------------------------
+# --- establishments (no deletion in this milestone) ---------------------------------------------
 
-def _establishment_out(db: Session) -> EstablishmentOut:
-    row = db.get(EstablishmentSettings, ESTABLISHMENT_ID)
-    current = effective_establishment(db)
-    return EstablishmentOut(
-        name=current.name, cnpj=current.cnpj, address=current.address, phone=current.phone,
-        source="database" if row is not None else "configuration",
-        updated_at=row.updated_at if row is not None else None,
-    )
+@router.get("/establishments", response_model=list[EstablishmentOut])
+def list_establishments(db: DB) -> list[Establishment]:
+    return list(db.scalars(select(Establishment).order_by(Establishment.name, Establishment.id)).all())
 
 
-@router.get("/establishment", response_model=EstablishmentOut)
-def get_establishment(db: DB) -> EstablishmentOut:
-    return _establishment_out(db)
+@router.post("/establishments", response_model=EstablishmentOut, status_code=status.HTTP_201_CREATED)
+def create_establishment_route(data: EstablishmentIn, db: DB) -> Establishment:
+    try:
+        return create_establishment(db, name=data.name, cnpj=data.cnpj, address=data.address, phone=data.phone)
+    except ValueError as exc:
+        raise _bad_request(exc) from None
 
 
-@router.put("/establishment", response_model=EstablishmentOut)
-def save_establishment(data: EstablishmentIn, db: DB, admin: Admin) -> EstablishmentOut:
-    name = clean_text(data.name)
-    if not name:
-        raise HTTPException(status_code=422, detail="Informe o nome do estabelecimento.")
-    values = {"name": name, "cnpj": clean_text(data.cnpj), "address": clean_text(data.address),
-              "phone": clean_text(data.phone), "updated_by_id": admin.id}
-    row = db.get(EstablishmentSettings, ESTABLISHMENT_ID)
-    if row is None:
-        db.add(EstablishmentSettings(id=ESTABLISHMENT_ID, **values))
-    else:
-        for key, value in values.items():
-            setattr(row, key, value)
-    db.commit()
-    return _establishment_out(db)
+@router.patch("/establishments/{establishment_id}", response_model=EstablishmentOut)
+def update_establishment_route(establishment_id: int, data: EstablishmentUpdateIn, db: DB) -> Establishment:
+    establishment = db.get(Establishment, establishment_id)
+    if establishment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Estabelecimento não encontrado.")
+    try:
+        return update_establishment(db, establishment, data.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        db.rollback()
+        raise _bad_request(exc) from None

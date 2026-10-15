@@ -35,6 +35,11 @@ def pharmacist(client, db):
     return _headers(client, "farm.teste")
 
 
+def _est(client, headers) -> int:
+    """Id of the default establishment (migrated from the configuration at startup)."""
+    return client.get("/admin/establishments", headers=headers).json()[0]["id"]
+
+
 def _user_id(db, login):
     return db.scalar(select(Pharmacist.id).where(Pharmacist.login == login))
 
@@ -80,15 +85,16 @@ def test_parse_legacy_crf(value, expected):
 
 
 def test_crf_and_uf_stored_separately_for_new_users(client, admin):
+    est = _est(client, admin)
     response = client.post("/admin/users", headers=admin, json={
         "full_name": "Novo Farmacêutico", "crf": "16906", "crf_uf": "rj", "login": "novo@pafarc.test",
-        "password": PASSWORD})
+        "password": PASSWORD, "establishment_id": est})
     assert response.status_code == 201
     body = response.json()
     assert (body["crf"], body["crf_number"], body["crf_uf"], body["role"]) == ("CRF/RJ 16906", "16906", "RJ", "pharmacist")
     for bad in ({"crf": "16906", "crf_uf": "XX"}, {"crf": "CRF/RJ 16906", "crf_uf": "RJ"}, {"crf": "", "crf_uf": "RJ"}):
         r = client.post("/admin/users", headers=admin, json={
-            "full_name": "X", "login": "x@pafarc.test", "password": PASSWORD, **bad})
+            "full_name": "X", "login": "x@pafarc.test", "password": PASSWORD, "establishment_id": est, **bad})
         assert r.status_code == 422, bad
 
 
@@ -101,8 +107,9 @@ ADMIN_CALLS = [
     ("post", "/admin/users/1/deactivate", None),
     ("post", "/admin/users/1/activate", None),
     ("post", "/admin/users/1/password", {"password": PASSWORD}),
-    ("get", "/admin/establishment", None),
-    ("put", "/admin/establishment", {"name": "Outro"}),
+    ("get", "/admin/establishments", None),
+    ("post", "/admin/establishments", {"name": "Outro"}),
+    ("patch", "/admin/establishments/1", {"name": "Outro"}),
 ]
 
 
@@ -204,7 +211,8 @@ def test_role_change_takes_effect_immediately(client, admin, pharmacist, db):
 
 def test_create_edit_block_reactivate_and_reset(client, db, admin):
     created = client.post("/admin/users", headers=admin, json={
-        "full_name": "Ana Lima", "crf": "12345", "crf_uf": "SP", "login": "ana@pafarc.test", "password": PASSWORD})
+        "full_name": "Ana Lima", "crf": "12345", "crf_uf": "SP", "login": "ana@pafarc.test", "password": PASSWORD,
+        "establishment_id": _est(client, admin)})
     assert created.status_code == 201
     uid = created.json()["id"]
     assert _login(client, "ana@pafarc.test").status_code == 200
@@ -236,7 +244,8 @@ def test_create_edit_block_reactivate_and_reset(client, db, admin):
 
 def test_user_validation_and_uniqueness(client, admin, pharmacist, db):
     dup = client.post("/admin/users", headers=admin, json={
-        "full_name": "Dup", "crf": "1", "crf_uf": "RJ", "login": "FARM.TESTE", "password": PASSWORD})
+        "full_name": "Dup", "crf": "1", "crf_uf": "RJ", "login": "FARM.TESTE", "password": PASSWORD,
+        "establishment_id": _est(client, admin)})
     assert dup.status_code == 409
     uid = _user_id(db, "farm.teste")
     assert client.patch(f"/admin/users/{uid}", headers=admin, json={"login": "admin@pafarc.test"}).status_code == 409
@@ -299,26 +308,6 @@ def test_cli_creates_administrator_and_sets_roles(client, db, monkeypatch, capsy
     assert "role=administrator" in capsys.readouterr().out
 
 
-# --- establishment ---------------------------------------------------------------------------------
-
-def test_establishment_falls_back_to_configuration(client, admin):
-    body = client.get("/admin/establishment", headers=admin).json()
-    assert body["source"] == "configuration"
-    assert body["name"] == "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC"
-    assert (body["cnpj"], body["address"], body["phone"]) == ("", "", "")
-
-
-def test_admin_saves_establishment_and_pharmacist_cannot(client, admin, pharmacist):
-    data = {"name": "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC", "cnpj": "00.000.000/0000-00",
-            "address": "Rua Fictícia de Teste, 1", "phone": "(00) 0000-0000"}
-    saved = client.put("/admin/establishment", headers=admin, json=data)
-    assert saved.status_code == 200 and saved.json()["source"] == "database"
-    assert {k: saved.json()[k] for k in data} == data
-    assert client.put("/admin/establishment", headers=pharmacist, json={"name": "Invasor"}).status_code == 403
-    assert client.get("/admin/establishment", headers=admin).json()["name"] == data["name"]
-    assert client.put("/admin/establishment", headers=admin, json={"name": "  "}).status_code == 422
-
-
 # --- documents --------------------------------------------------------------------------------------
 
 def _issue(client, headers, kind="prescription", payload=None):
@@ -339,12 +328,12 @@ DOC_PAYLOADS = {
 
 @pytest.mark.parametrize("kind", list(DOC_PAYLOADS))
 def test_documents_use_authenticated_pharmacist_and_database_establishment(client, admin, db, kind):
+    est = client.post("/admin/establishments", headers=admin, json={
+        "name": "Estabelecimento Fictício de Teste", "cnpj": "11.111.111/1111-11",
+        "address": "Rua Fictícia, 100", "phone": "(21) 0000-0000"}).json()["id"]
     client.post("/admin/users", headers=admin, json={
         "full_name": "Darlan Teste Documento", "crf": "16906", "crf_uf": "RJ", "login": "doc@pafarc.test",
-        "password": PASSWORD})
-    client.put("/admin/establishment", headers=admin, json={
-        "name": "Estabelecimento Fictício de Teste", "cnpj": "11.111.111/1111-11",
-        "address": "Rua Fictícia, 100", "phone": "(21) 0000-0000"})
+        "password": PASSWORD, "establishment_id": est})
     _, _, pdf = _issue(client, _headers(client, "doc@pafarc.test"), kind, DOC_PAYLOADS[kind])
     body = pdf_text(pdf)
     for value in ("Darlan Teste Documento", "CRF/RJ 16906", "Estabelecimento Fictício de Teste",
@@ -353,7 +342,7 @@ def test_documents_use_authenticated_pharmacist_and_database_establishment(clien
     assert "Admin Teste" not in body
 
 
-def test_documents_use_configuration_when_establishment_not_saved(client, pharmacist):
+def test_documents_use_migrated_default_establishment(client, pharmacist):
     _, _, pdf = _issue(client, pharmacist)
     body = pdf_text(pdf)
     assert "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC" in body
@@ -364,7 +353,8 @@ def test_documents_use_configuration_when_establishment_not_saved(client, pharma
 def test_reprint_unchanged_after_establishment_and_user_edits(client, admin, pharmacist, db):
     pid, cid, original = _issue(client, pharmacist)
     doc_id = client.get(f"/patients/{pid}/consultations/{cid}", headers=pharmacist).json()["documents"][0]["id"]
-    client.put("/admin/establishment", headers=admin, json={"name": "Nome Novo", "cnpj": "22.222.222/2222-22"})
+    client.patch(f"/admin/establishments/{_est(client, admin)}", headers=admin,
+                 json={"name": "Nome Novo", "cnpj": "22.222.222/2222-22"})
     uid = _user_id(db, "farm.teste")
     client.patch(f"/admin/users/{uid}", headers=admin, json={"full_name": "Nome Alterado", "crf": "999", "crf_uf": "BA"})
     reprint = client.get(f"/patients/{pid}/consultations/{cid}/documents/{doc_id}", headers=pharmacist)
@@ -392,7 +382,7 @@ def test_administrator_can_be_created_without_crf(client, admin, db):
 def test_pharmacist_cannot_be_created_without_crf_and_uf(client, admin, crf_fields):
     response = client.post("/admin/users", headers=admin, json={
         "full_name": "Farmacêutico Sem CRF", "login": "farm.semcrf@pafarc.test", "password": PASSWORD,
-        "role": "pharmacist", **crf_fields})
+        "role": "pharmacist", "establishment_id": _est(client, admin), **crf_fields})
     assert response.status_code == 422, crf_fields
 
 
@@ -404,7 +394,8 @@ def test_crf_rules_on_edit(client, admin, db):
     assert client.patch(f"/admin/users/{uid}", headers=admin, json={"role": "pharmacist"}).status_code == 422
     db.expire_all()
     assert db.get(Pharmacist, uid).role == ROLE_ADMINISTRATOR
-    ok = client.patch(f"/admin/users/{uid}", headers=admin, json={"role": "pharmacist", "crf": "4321", "crf_uf": "ES"})
+    ok = client.patch(f"/admin/users/{uid}", headers=admin, json={
+        "role": "pharmacist", "crf": "4321", "crf_uf": "ES", "establishment_id": _est(client, admin)})
     assert ok.status_code == 200 and ok.json()["crf"] == "CRF/ES 4321"
 
 

@@ -18,7 +18,7 @@ from backend.auth import get_current_pharmacist, require_clinical
 from backend.consultations import _get_consultation, _get_editable_consultation, _get_patient
 from backend.database import get_db
 from backend.models import GeneratedDocument, Pharmacist
-from backend.admin import effective_establishment
+from backend.establishments import NoEstablishmentError, document_header_for
 from backend.pdf import DocumentContext, DocumentPDF, clean_text
 from backend.schemas import ExamRequestIn, PrescriptionIn, ReferralIn
 
@@ -111,8 +111,13 @@ def _issue(
 ) -> Response:
     patient = _get_patient(db, patient_id)
     consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    try:
+        # Header = the authenticated pharmacist's own establishment (never from the request).
+        header = document_header_for(pharmacist)
+    except NoEstablishmentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     context = DocumentContext(
-        establishment=effective_establishment(db),
+        establishment=header,
         patient_name=patient.full_name,
         patient_date_of_birth=patient.date_of_birth,
         patient_cpf=patient.cpf,

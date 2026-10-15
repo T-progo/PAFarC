@@ -124,7 +124,7 @@ def login_in_use(db: Session, login: str, exclude_id: int | None = None) -> bool
 
 def create_pharmacist(
     db: Session, *, full_name: str, crf: str, login: str, password: str,
-    crf_uf: str | None = None, role: str = ROLE_PHARMACIST,
+    crf_uf: str | None = None, role: str = ROLE_PHARMACIST, establishment_id: int | None = None,
 ) -> Pharmacist:
     full_name = full_name.strip()
     if not full_name:
@@ -135,10 +135,16 @@ def create_pharmacist(
     validate_password(password)
     if login_in_use(db, login):
         raise ValueError(f"Login '{login}' is already in use.")
+    from backend.establishments import establishment_for_new_pharmacist  # avoid import cycle
+
+    if role == ROLE_PHARMACIST:
+        establishment_id = establishment_for_new_pharmacist(db, establishment_id)
+    elif establishment_id is not None:
+        raise ValueError("Administradores não são vinculados a estabelecimentos.")
 
     pharmacist = Pharmacist(
         full_name=full_name, crf=crf, crf_uf=uf, login=login, role=role,
-        password_hash=hash_password(password),
+        password_hash=hash_password(password), establishment_id=establishment_id,
     )
     db.add(pharmacist)
     try:

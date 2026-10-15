@@ -54,7 +54,11 @@ def init_db() -> None:
 # alter existing ones, so these are added in place (no data is changed).
 _ADDED_COLUMNS = {
     "generated_documents": {"pdf_encrypted": "BLOB", "pdf_size": "INTEGER"},
-    "pharmacists": {"role": "VARCHAR(20) NOT NULL DEFAULT 'pharmacist'", "crf_uf": "VARCHAR(2)"},
+    "pharmacists": {
+        "role": "VARCHAR(20) NOT NULL DEFAULT 'pharmacist'",
+        "crf_uf": "VARCHAR(2)",
+        "establishment_id": "INTEGER REFERENCES establishments(id)",
+    },
 }
 
 
