@@ -77,8 +77,11 @@ There are two roles:
 - **pharmacist**: the clinical features (patients, SOAP, exams, documents).
 - **administrator**: Administração · Usuários (list, create, edit, block/reactivate users, reset passwords)
   and Administração · Estabelecimento (name, CNPJ, address, phone printed on new documents). All `/admin`
-  routes return 403 to non-administrators. Whether administrators also keep clinical access is set by
-  `CLINICAL_ROLES` in `backend/models.py` (currently: yes).
+  routes return 403 to non-administrators.
+
+The roles are strictly separate: administrators cannot use the clinical features (every patient,
+consultation and document route returns 403 to them) and pharmacists cannot use the administration.
+An administrator therefore needs its own account, separate from any pharmacist account.
 
 Safety rules: an administrator cannot block or demote themselves, and the last active administrator cannot be
 blocked or demoted. Blocking takes effect immediately (login and open sessions are refused). Passwords are only

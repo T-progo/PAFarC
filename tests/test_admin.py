@@ -127,17 +127,77 @@ def test_admin_lists_users_without_password_hashes(client, admin, pharmacist):
     assert "$2" not in response.text
 
 
-def test_administrator_keeps_clinical_access(client, admin):
-    # Pending client decision (CLINICAL_ROLES): administrators currently can also use clinical features.
-    assert client.get("/auth/me", headers=admin).json()["clinical_access"] is True
-    assert client.post("/patients", json=PATIENT, headers=admin).status_code == 201
+def test_administrator_has_no_clinical_access(client, admin):
+    me = client.get("/auth/me", headers=admin).json()
+    assert (me["is_admin"], me["clinical_access"]) == (True, False)
 
 
-def test_clinical_routes_follow_clinical_roles(client, db, admin, monkeypatch):
-    from backend import models
-    monkeypatch.setattr(models, "CLINICAL_ROLES", frozenset({ROLE_PHARMACIST}))
-    assert client.post("/patients", json=PATIENT, headers=admin).status_code == 403
-    assert client.post("/patients/search", json={"query": "abc"}, headers=admin).status_code == 403
+def _clinical_routes():
+    """Every clinical route, read from the API itself (new routes are covered automatically)."""
+    from backend.main import app
+    for path, methods in app.openapi()["paths"].items():
+        if path.startswith("/patients"):
+            for method in methods:
+                yield method, path
+
+
+CLINICAL_ROUTES = sorted(_clinical_routes())
+
+
+def test_clinical_route_list_is_complete():
+    assert len(CLINICAL_ROUTES) >= 15  # patients, consultations, SOAP, exams, documents, reprint
+
+
+@pytest.mark.parametrize("method,path", CLINICAL_ROUTES)
+def test_administrator_denied_on_every_clinical_route(client, admin, method, path):
+    url = path.replace("{patient_id}", "1").replace("{consultation_id}", "1")
+    url = url.replace("{exam_id}", "1").replace("{document_id}", "1")
+    response = client.request(method.upper(), url, headers=admin, json={})
+    assert response.status_code == 403, (method, path, response.status_code)
+
+
+def test_administrator_cannot_reach_existing_patient_data(client, admin, pharmacist):
+    pid = client.post("/patients", json=PATIENT, headers=pharmacist).json()["id"]
+    cid = client.post(f"/patients/{pid}/consultations", json={}, headers=pharmacist).json()["id"]
+    base = f"/patients/{pid}/consultations/{cid}"
+    for method, url, body in (
+        ("GET", f"/patients/{pid}", None),
+        ("POST", "/patients/search", {"query": PATIENT["cpf"]}),
+        ("GET", f"/patients/{pid}/consultations", None),
+        ("GET", base, None),
+        ("POST", f"/patients/{pid}/consultations", {}),
+        ("PUT", f"{base}/soap", {"subjective": "x"}),
+        ("POST", f"{base}/exams", {"exam_name": "Ureia", "result": "1"}),
+        ("POST", f"{base}/documents/prescription", {"items": [{"medication": "x"}]}),
+        ("POST", f"{base}/documents/exam-request", {"exams": ["Ureia"], "clinical_justification": "x"}),
+        ("POST", f"{base}/documents/referral", {"destination": "x", "case_summary": "x", "prm": "x",
+                                                 "suggested_conduct": "x"}),
+    ):
+        response = client.request(method, url, headers=admin, json=body)
+        assert response.status_code == 403, (method, url)
+        assert "Paciente Ficticio" not in response.text
+    # the pharmacist's own work is untouched and still accessible to the pharmacist
+    assert client.get(base, headers=pharmacist).json()["soap"] is None
+
+
+def test_pharmacist_keeps_full_clinical_access(client, pharmacist):
+    me = client.get("/auth/me", headers=pharmacist).json()
+    assert (me["is_admin"], me["clinical_access"]) == (False, True)
+    pid = client.post("/patients", json=PATIENT, headers=pharmacist).json()["id"]
+    cid = client.post(f"/patients/{pid}/consultations", json={}, headers=pharmacist).json()["id"]
+    base = f"/patients/{pid}/consultations/{cid}"
+    assert client.put(f"{base}/soap", json={"subjective": "s"}, headers=pharmacist).status_code == 200
+    assert client.post(f"{base}/exams", json={"exam_name": "Ureia", "result": "38"}, headers=pharmacist).status_code == 201
+    assert client.post("/patients/search", json={"query": "Paciente"}, headers=pharmacist).json()[0]["id"] == pid
+
+
+def test_role_change_takes_effect_immediately(client, admin, pharmacist, db):
+    uid = _user_id(db, "farm.teste")
+    assert client.post("/patients", json=PATIENT, headers=pharmacist).status_code == 201
+    client.patch(f"/admin/users/{uid}", headers=admin, json={"role": "administrator"})
+    # same token: now an administrator, so clinical routes are refused and admin routes allowed
+    assert client.post("/patients/search", json={"query": "Paciente"}, headers=pharmacist).status_code == 403
+    assert client.get("/admin/users", headers=pharmacist).status_code == 200
 
 
 # --- user management ----------------------------------------------------------------------------

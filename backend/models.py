@@ -16,9 +16,9 @@ ROLE_ADMINISTRATOR = "administrator"
 ROLE_PHARMACIST = "pharmacist"
 ROLES = (ROLE_ADMINISTRATOR, ROLE_PHARMACIST)
 # Roles allowed to use the clinical features (patients, SOAP, exams, documents).
-# Pending the client's decision on whether administrators are also clinical users;
-# change this single setting to make the roles strictly separate.
-CLINICAL_ROLES = frozenset({ROLE_PHARMACIST, ROLE_ADMINISTRATOR})
+# Strict two-role model agreed with the client: administrators manage users and the
+# establishment only; pharmacists use the clinical features only.
+CLINICAL_ROLES = frozenset({ROLE_PHARMACIST})
 
 UFS = (
     "AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA",
