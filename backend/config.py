@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     establishment_address: str = ""
     establishment_cnpj: str = ""
     establishment_phone: str = ""
-    establishment_city: str = ""  # e.g. "Cidade - UF"; used in the date/location line
 
 
 @lru_cache

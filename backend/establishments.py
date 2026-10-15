@@ -136,5 +136,5 @@ def document_header_for(pharmacist: Pharmacist) -> DocumentEstablishment:
         )
     return DocumentEstablishment(
         name=establishment.name, cnpj=establishment.cnpj, address=establishment.address,
-        phone=establishment.phone, city=get_settings().establishment_city.strip(),
+        phone=establishment.phone,
     )

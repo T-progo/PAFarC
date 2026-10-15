@@ -36,10 +36,6 @@ LOGO_ASPECT = 1156 / 912  # width / height of IMG_1486.jpeg
 FOOTER_SPACE = 22
 SIGNATURE_BLOCK_HEIGHT = 48
 LONG_LABEL = 50  # mm; longer labels go on their own line
-MONTHS = [
-    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
-    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
-]
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
@@ -50,7 +46,6 @@ class Establishment:
     address: str = ""
     cnpj: str = ""
     phone: str = ""
-    city: str = ""
 
     @classmethod
     def from_settings(cls) -> "Establishment":
@@ -60,7 +55,6 @@ class Establishment:
             address=s.establishment_address.strip(),
             cnpj=s.establishment_cnpj.strip(),
             phone=s.establishment_phone.strip(),
-            city=s.establishment_city.strip(),
         )
 
 
@@ -94,10 +88,6 @@ def crf_label(crf: str) -> str:
 
 def format_date(value: date) -> str:
     return value.strftime("%d/%m/%Y")
-
-
-def long_date(value: date) -> str:
-    return f"{value.day} de {MONTHS[value.month - 1]} de {value.year}"
 
 
 class DocumentPDF(FPDF):
@@ -277,15 +267,13 @@ class DocumentPDF(FPDF):
         self.multi_cell(0, 5.6, f"{number}. {clean_text(text)}", align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     def closing(self) -> None:
-        """Date/location line and signature/stamp area, kept together on one page."""
+        """Date line ("Data: DD/MM/AAAA", no city/UF) and signature/stamp area, kept together."""
         ctx = self.context
         if self.get_y() + SIGNATURE_BLOCK_HEIGHT > self.page_break_trigger:
             self.add_page()
         self.ln(8)
-        city = ctx.establishment.city
-        when = long_date(ctx.issued_at.date())
         self.set_font(FONT, "", 10)
-        self.cell(0, 5, f"{city}, {when}." if city else f"Data: {when}.", align="R",
+        self.cell(0, 5, f"Data: {format_date(ctx.issued_at.date())}", align="R",
                   new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         self.ln(18)
         line_w = 80

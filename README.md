@@ -58,7 +58,7 @@ All settings are environment variables; the backend also reads `.env` from its w
 | `PHARMATECH_BLIND_INDEX_KEY` | yes | HMAC key for CPF/name search (≥ 32 chars) |
 | `PHARMATECH_ACCESS_TOKEN_EXPIRE_MINUTES` | – | Login lifetime (default 60; `.env.example` suggests 480 = one shift) |
 | `PHARMATECH_ESTABLISHMENT_NAME` | – | Defaults to "Programa de Aperfeiçoamento em Farmácia Clínica - PAFarC" |
-| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` / `_CITY` | – | Used once to create the first establishment (migration); `_CITY` is still printed in the date line of every document |
+| `PHARMATECH_ESTABLISHMENT_ADDRESS` / `_CNPJ` / `_PHONE` | – | Used once to create the first establishment (migration). Documents show only "Data: DD/MM/AAAA" in the date line (no city/UF) |
 | `PHARMATECH_API_URL` | – | UI only: backend address (default `http://127.0.0.1:8000`) |
 
 The backend refuses to start if a required key is missing or invalid.

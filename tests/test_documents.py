@@ -72,15 +72,15 @@ def test_pdf_is_valid_without_optional_establishment_fields():
     assert "Programa Teste - PAFarC" in text
     for absent in ("CNPJ", "Tel.", "N/A", "None", "Endereço"):
         assert absent not in text
-    assert "Data: 10 de janeiro de 2026." in text
+    assert "Data: 10/01/2026" in text
 
 
 def test_pdf_includes_optional_establishment_fields_when_configured():
     est = Establishment(name="Programa Teste", address="Rua Fictícia, 1", cnpj="00.000.000/0000-00",
-                        phone="(00) 0000-0000", city="Cidade Teste - UF")
+                        phone="(00) 0000-0000")
     text = pdf_text(build_referral(_context(est), ReferralIn(**REFERRAL)))
     for value in ("Rua Fictícia, 1", "CNPJ 00.000.000/0000-00", "Tel. (00) 0000-0000",
-                  "Cidade Teste - UF, 10 de janeiro de 2026."):
+                  "Data: 10/01/2026"):
         assert value in text
 
 
