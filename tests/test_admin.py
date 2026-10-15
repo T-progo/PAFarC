@@ -370,3 +370,58 @@ def test_reprint_unchanged_after_establishment_and_user_edits(client, admin, pha
     reprint = client.get(f"/patients/{pid}/consultations/{cid}/documents/{doc_id}", headers=pharmacist)
     assert reprint.content == original
     assert "Nome Novo" not in pdf_text(reprint.content)
+
+
+# --- CRF/UF: optional for administrators, required for pharmacists -----------------------------
+
+def test_administrator_can_be_created_without_crf(client, admin, db):
+    response = client.post("/admin/users", headers=admin, json={
+        "full_name": "Administrador Sem CRF", "login": "adm.semcrf@pafarc.test", "password": PASSWORD,
+        "role": "administrator"})
+    assert response.status_code == 201
+    body = response.json()
+    assert (body["crf"], body["crf_number"], body["crf_uf"], body["role"]) == ("", "", None, "administrator")
+    new_admin = _headers(client, "adm.semcrf@pafarc.test")
+    assert client.get("/admin/users", headers=new_admin).status_code == 200
+    # still no clinical access
+    assert client.post("/patients/search", json={"query": "abc"}, headers=new_admin).status_code == 403
+    assert client.post("/patients", json=PATIENT, headers=new_admin).status_code == 403
+
+
+@pytest.mark.parametrize("crf_fields", [{}, {"crf": ""}, {"crf": "16906"}, {"crf_uf": "RJ"}, {"crf": "", "crf_uf": "RJ"}])
+def test_pharmacist_cannot_be_created_without_crf_and_uf(client, admin, crf_fields):
+    response = client.post("/admin/users", headers=admin, json={
+        "full_name": "Farmacêutico Sem CRF", "login": "farm.semcrf@pafarc.test", "password": PASSWORD,
+        "role": "pharmacist", **crf_fields})
+    assert response.status_code == 422, crf_fields
+
+
+def test_crf_rules_on_edit(client, admin, db):
+    created = client.post("/admin/users", headers=admin, json={
+        "full_name": "Adm Dois", "login": "adm2@pafarc.test", "password": PASSWORD, "role": "administrator"}).json()
+    uid = created["id"]
+    # an administrator without CRF cannot become a pharmacist unless a CRF/UF is given
+    assert client.patch(f"/admin/users/{uid}", headers=admin, json={"role": "pharmacist"}).status_code == 422
+    db.expire_all()
+    assert db.get(Pharmacist, uid).role == ROLE_ADMINISTRATOR
+    ok = client.patch(f"/admin/users/{uid}", headers=admin, json={"role": "pharmacist", "crf": "4321", "crf_uf": "ES"})
+    assert ok.status_code == 200 and ok.json()["crf"] == "CRF/ES 4321"
+
+
+def test_cli_creates_administrator_without_crf(client, db, monkeypatch):
+    _run_cli(monkeypatch, "--full-name", "Admin CLI", "--login", "admin.cli@pafarc.test", "--role", "administrator")
+    db.expire_all()
+    user = db.scalar(select(Pharmacist).where(Pharmacist.login == "admin.cli@pafarc.test"))
+    assert (user.role, user.crf, user.crf_uf, user.crf_display) == (ROLE_ADMINISTRATOR, "", None, "")
+
+
+def test_existing_pharmacist_accounts_unchanged_by_crf_rules(client, admin, pharmacist, db):
+    uid = _user_id(db, "farm.teste")
+    before = db.get(Pharmacist, uid)
+    snapshot = (before.crf, before.crf_uf, before.role, before.crf_display)
+    # editing other fields of a legacy account does not re-validate or rewrite its CRF
+    assert client.patch(f"/admin/users/{uid}", headers=admin, json={"full_name": "Farmacêutica Renomeada"}).status_code == 200
+    db.expire_all()
+    after = db.get(Pharmacist, uid)
+    assert (after.crf, after.crf_uf, after.role, after.crf_display) == snapshot == ("CRF-SP 11111", "SP", "pharmacist", "CRF-SP 11111")
+    assert _login(client, "farm.teste").status_code == 200

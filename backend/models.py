@@ -76,6 +76,8 @@ class Pharmacist(Base):
     @property
     def crf_display(self) -> str:
         text = (self.crf or "").strip()
+        if not text:  # administrators may have no CRF
+            return ""
         if text.upper().startswith("CRF"):  # legacy combined value: shown exactly as stored
             return text
         return format_crf(text, self.crf_uf)

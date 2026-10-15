@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models import ROLE_PHARMACIST, ROLES, UFS, Pharmacist, parse_legacy_crf
+from backend.models import ROLE_ADMINISTRATOR, ROLE_PHARMACIST, ROLES, UFS, Pharmacist, parse_legacy_crf
 from backend.schemas import PharmacistOut, Token
 from backend.security import (
     DUMMY_PASSWORD_HASH,
@@ -90,21 +90,29 @@ def validate_role(role: str) -> str:
     return role
 
 
-def validate_crf(crf: str, crf_uf: str | None) -> tuple[str, str | None]:
-    """(crf, uf) to store. With a UF, `crf` must be the number only. Without one, a
-    legacy combined text (e.g. "CRF/RJ 16906") is accepted as before and its UF extracted."""
-    crf = crf.strip()
+def validate_crf(crf: str | None, crf_uf: str | None, role: str = ROLE_PHARMACIST) -> tuple[str, str | None]:
+    """(crf, uf) to store.
+
+    Pharmacists need a CRF and its UF: either the number with a separate UF, or a legacy
+    combined text such as "CRF/RJ 16906" (its UF is extracted). Administrators are not
+    necessarily pharmacists, so they may have no CRF at all (stored as an empty CRF)."""
+    crf = (crf or "").strip()
+    uf_in = (crf_uf or "").strip().upper()
     if not crf:
-        raise ValueError("CRF is required.")
-    if crf_uf is not None and crf_uf.strip():
-        uf = crf_uf.strip().upper()
-        if uf not in UFS:
+        if role == ROLE_ADMINISTRATOR and not uf_in:
+            return "", None
+        raise ValueError("CRF is required for pharmacists.")
+    if uf_in:
+        if uf_in not in UFS:
             raise ValueError("UF must be a valid Brazilian state abbreviation.")
         if not CRF_NUMBER_PATTERN.fullmatch(crf):
             raise ValueError("CRF number must contain only digits (optionally '.' or '-').")
-        return crf, uf
+        return crf, uf_in
     legacy = parse_legacy_crf(crf)
-    return crf, (legacy[1] if legacy else None)
+    uf = legacy[1] if legacy else None
+    if uf is None and role == ROLE_PHARMACIST:
+        raise ValueError("The UF of the CRF is required for pharmacists.")
+    return crf, uf
 
 
 def login_in_use(db: Session, login: str, exclude_id: int | None = None) -> bool:
@@ -121,10 +129,10 @@ def create_pharmacist(
     full_name = full_name.strip()
     if not full_name:
         raise ValueError("Full name is required.")
-    crf, uf = validate_crf(crf, crf_uf)
     login = validate_login(login)
-    validate_password(password)
     validate_role(role)
+    crf, uf = validate_crf(crf, crf_uf, role)
+    validate_password(password)
     if login_in_use(db, login):
         raise ValueError(f"Login '{login}' is already in use.")
 

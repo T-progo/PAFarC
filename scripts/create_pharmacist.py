@@ -59,7 +59,11 @@ def main() -> None:
         return
 
     full_name = _ask(args.full_name, "Full name: ")
-    crf = _ask(args.crf, "CRF: ")
+    # Administrators are not necessarily pharmacists: no CRF is asked for them.
+    if args.role == "administrator":
+        crf = args.crf or ""
+    else:
+        crf = _ask(args.crf, "CRF: ")
     login = _ask(args.login, "Login: ")
     password = _ask_password()
 

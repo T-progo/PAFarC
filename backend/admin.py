@@ -126,8 +126,11 @@ def update_user(user_id: int, data: UserUpdateIn, db: DB, admin: Admin) -> Pharm
             if not data.full_name.strip():
                 raise ValueError("Full name is required.")
             user.full_name = data.full_name.strip()
+        final_role = data.role if data.role is not None else user.role
         if data.crf is not None:
-            user.crf, user.crf_uf = validate_crf(data.crf, data.crf_uf)
+            user.crf, user.crf_uf = validate_crf(data.crf, data.crf_uf, validate_role(final_role))
+        elif final_role != user.role and not user.crf.strip():
+            validate_crf("", None, final_role)  # e.g. administrator without CRF becoming pharmacist
         if data.login is not None:
             login = validate_login(data.login)
             if login_in_use(db, login, exclude_id=user.id):

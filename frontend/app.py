@@ -256,26 +256,30 @@ def users_view() -> None:
         return
     gen = st.session_state.get("admin_gen", 0)
     st.dataframe(
-        [{"Nome": u["full_name"], "CRF": u["crf"], "Login": u["login"], "Perfil": ROLE_LABELS.get(u["role"], u["role"]),
+        [{"Nome": u["full_name"], "CRF": u["crf"] or "—", "Login": u["login"], "Perfil": ROLE_LABELS.get(u["role"], u["role"]),
           "Situação": "Ativo" if u["active"] else "Bloqueado"} for u in users],
         hide_index=True, width="stretch",
     )
 
-    with st.expander("Novo usuário"):
+    st.subheader("Novo usuário")
+    # A plain section (not a collapsible panel), so validation messages are always visible.
+    with st.container():
         with st.form(f"user_new_{gen}"):
             name = st.text_input("Nome completo", key=f"un_name_{gen}")
+            role = st.selectbox("Perfil", list(ROLE_LABELS), index=1, format_func=ROLE_LABELS.get, key=f"un_role_{gen}")
             c1, c2 = st.columns([3, 1])
             crf = c1.text_input("CRF (número)", key=f"un_crf_{gen}")
             uf = c2.selectbox("UF", UFS, index=None, placeholder="UF", key=f"un_uf_{gen}")
+            st.caption("CRF e UF são obrigatórios para farmacêuticos e opcionais para administradores.")
             login = st.text_input("Login / e-mail", key=f"un_login_{gen}")
-            role = st.selectbox("Perfil", list(ROLE_LABELS), index=1, format_func=ROLE_LABELS.get, key=f"un_role_{gen}")
             p1, p2 = st.columns(2)
             password = p1.text_input("Senha", type="password", key=f"un_pw_{gen}")
             confirm = p2.text_input("Confirmar senha", type="password", key=f"un_pw2_{gen}")
             submitted = st.form_submit_button("Criar usuário", type="primary")
         if submitted:
-            if not all((name.strip(), crf.strip(), uf, login.strip(), password)):
-                st.warning("Preencha nome, CRF, UF, login e senha.")
+            needs_crf = role == "pharmacist"
+            if not all((name.strip(), login.strip(), password)) or (needs_crf and not (crf.strip() and uf)):
+                st.warning("Preencha nome, login e senha" + (", CRF e UF." if needs_crf else "."))
             elif password != confirm:
                 st.warning("As senhas não conferem.")
             else:
@@ -316,7 +320,7 @@ def edit_user_panel(user: dict, gen: int) -> None:
         if name.strip() != user["full_name"]:
             changes["full_name"] = name
         if crf.strip() != user["crf_number"] or uf != user["crf_uf"]:  # CRF rewritten only if changed
-            if not crf.strip() or not uf:
+            if role == "pharmacist" and (not crf.strip() or not uf):
                 st.warning("Informe o número do CRF e a UF.")
                 return
             changes.update({"crf": crf, "crf_uf": uf})

@@ -90,14 +90,15 @@ stored as bcrypt hashes; an administrator assigns a new password directly (no e-
 Accounts are created by an administrator in the app, or on the server (the password is asked interactively):
 
 ```bash
-# first administrator
-python -m scripts.create_pharmacist --full-name "Nome Completo" --crf 12345 --uf RJ --login nome@exemplo.com --role administrator
+# first administrator (no CRF needed)
+python -m scripts.create_pharmacist --full-name "Nome Completo" --login nome@exemplo.com --role administrator
 # pharmacist
 python -m scripts.create_pharmacist --full-name "Nome Completo" --crf 12345 --uf RJ --login nome@exemplo.com
 # change the role of an existing account
 python -m scripts.create_pharmacist --set-role nome@exemplo.com --role administrator
 ```
 
+Pharmacists must have a CRF and its UF; administrators may have none (they are not necessarily pharmacists).
 CRF and UF are stored separately and printed as `CRF/UF número` (e.g. `CRF/RJ 16906`). Accounts created before
 this keep their original combined CRF text (shown exactly as before); their UF is extracted automatically.
 

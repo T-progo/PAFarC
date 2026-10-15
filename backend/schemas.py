@@ -26,7 +26,7 @@ class PharmacistOut(BaseModel):
 
 class UserCreateIn(BaseModel):
     full_name: str = Field(max_length=200)
-    crf: str = Field(max_length=30)
+    crf: str = Field(default="", max_length=30)  # required for pharmacists only
     crf_uf: str | None = Field(default=None, max_length=2)
     login: str = Field(max_length=50)
     password: str = Field(max_length=200)
