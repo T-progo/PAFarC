@@ -1,5 +1,5 @@
 """Document generation: Prescrição / Plano de Cuidado, Solicitação de Exames
-Laboratoriais and Encaminhamento / Interconsulta.
+Laboratoriais, Encaminhamento / Interconsulta and Declaração de Serviço Farmacêutico (DSF).
 
 PDFs are built in memory from the consultation context plus content entered by
 the pharmacist and returned as the response body; they are never written to disk.
@@ -19,22 +19,31 @@ from backend.consultations import _get_consultation, _get_editable_consultation,
 from backend.database import get_db
 from backend.models import GeneratedDocument, Pharmacist
 from backend.establishments import NoEstablishmentError, document_header_for
-from backend.pdf import DocumentContext, DocumentPDF, clean_text
-from backend.schemas import ExamRequestIn, PrescriptionIn, ReferralIn
+from backend.pdf import DocumentContext, DocumentPDF, ResultRow, clean_text, format_date
+from backend.schemas import DsfIn, ExamRequestIn, PrescriptionIn, ReferralIn
 
 PRESCRIPTION = "prescription"
 EXAM_REQUEST = "exam_request"
 REFERRAL = "referral"
+DSF = "dsf"
 DOCUMENT_TITLES = {
     PRESCRIPTION: "Prescrição / Plano de Cuidado",
     EXAM_REQUEST: "Solicitação de Exames Laboratoriais",
     REFERRAL: "Encaminhamento / Interconsulta",
+    DSF: "Declaração de Serviço Farmacêutico",
 }
 FILE_PREFIXES = {
     PRESCRIPTION: "prescricao-plano-de-cuidado",
     EXAM_REQUEST: "solicitacao-de-exames",
     REFERRAL: "encaminhamento-interconsulta",
+    DSF: "declaracao-servico-farmaceutico",
 }
+# Client-provided wording, printed exactly as given.
+DSF_NOTICE = (
+    "Este exame possui finalidade de triagem e rastreamento, não sendo destinado à confirmação "
+    "diagnóstica. Os resultados devem ser avaliados por profissional legalmente habilitado e, quando "
+    "necessário, complementados por exames laboratoriais confirmatórios."
+)
 
 CurrentPharmacist = Annotated[Pharmacist, Depends(get_current_pharmacist)]
 DB = Annotated[Session, Depends(get_db)]
@@ -95,6 +104,22 @@ def build_referral(ctx: DocumentContext, data: ReferralIn) -> bytes:
     pdf.paragraph(data.prm)
     pdf.section("Conduta sugerida")
     pdf.paragraph(data.suggested_conduct)
+    pdf.closing()
+    return pdf.to_bytes()
+
+
+def build_dsf(ctx: DocumentContext, results: list[ResultRow], data: DsfIn) -> bytes:
+    pdf = DocumentPDF(DOCUMENT_TITLES[DSF], ctx)
+    pdf.section("Resultados registrados no atendimento")
+    pdf.results_table(results)
+    pdf.section("Dados do teste")
+    pdf.labeled_line("Fabricante do teste", data.manufacturer)
+    pdf.labeled_line("Número do lote", data.lot)
+    pdf.labeled_line("Data de validade", format_date(data.expiry_date))
+    # The results belong to the consultation, so they were obtained on its date.
+    pdf.labeled_line("Data da realização", format_date(ctx.consultation_date))
+    pdf.ln(4)
+    pdf.notice("Aviso", DSF_NOTICE)
     pdf.closing()
     return pdf.to_bytes()
 
@@ -200,3 +225,24 @@ def generate_referral(
     _required(data.suggested_conduct, "Informe a conduta sugerida.")
     return _issue(db, patient_id, consultation_id, pharmacist, REFERRAL,
                   lambda ctx: build_referral(ctx, data))
+
+
+@router.post("/dsf", response_class=Response)
+def generate_dsf(
+    patient_id: int, consultation_id: int, data: DsfIn, db: DB, pharmacist: CurrentPharmacist
+) -> Response:
+    data.manufacturer = _required(data.manufacturer, "Informe o fabricante do teste.")
+    data.lot = _required(data.lot, "Informe o número do lote.")
+    consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    # Results come only from the consultation (snapshot at issue); the request cannot supply them.
+    results = [
+        ResultRow(exam=e.exam_name, result=e.result, unit=e.unit, reference=e.reference_range, notes=e.notes)
+        for e in consultation.exam_results
+    ]
+    if not results:
+        raise HTTPException(
+            status_code=422,
+            detail="Registre os resultados de exame neste atendimento antes de emitir a DSF.",
+        )
+    return _issue(db, patient_id, consultation_id, pharmacist, DSF,
+                  lambda ctx: build_dsf(ctx, results, data))

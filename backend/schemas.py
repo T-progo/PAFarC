@@ -196,3 +196,12 @@ class ReferralIn(BaseModel):
     case_summary: str = Field(max_length=10000)
     prm: str = Field(max_length=5000)
     suggested_conduct: str = Field(max_length=5000)
+
+
+class DsfIn(BaseModel):
+    """Test identification entered when the DSF is issued. The exam results themselves
+    are read from the consultation; they are never accepted from the request."""
+
+    manufacturer: str = Field(max_length=200)
+    lot: str = Field(max_length=100)
+    expiry_date: date

@@ -825,20 +825,24 @@ def save_exam(patient_id: int, cid: int, exam_id: int | None, values: dict, mess
 DOC_PRESCRIPTION = "prescription"
 DOC_EXAM_REQUEST = "exam-request"
 DOC_REFERRAL = "referral"
+DOC_DSF = "dsf"
 DOCUMENT_LABELS = {
     DOC_PRESCRIPTION: "Prescrição / Plano de Cuidado",
     DOC_EXAM_REQUEST: "Solicitação de Exames",
     DOC_REFERRAL: "Encaminhamento / Interconsulta",
+    DOC_DSF: "Declaração de Serviço Farmacêutico (DSF)",
 }
 ISSUED_LABELS = {
     "prescription": "Prescrição / Plano de Cuidado",
     "exam_request": "Solicitação de Exames Laboratoriais",
     "referral": "Encaminhamento / Interconsulta",
+    "dsf": "Declaração de Serviço Farmacêutico (DSF)",
 }
 REPRINT_FILE_PREFIXES = {
     "prescription": "prescricao-plano-de-cuidado",
     "exam_request": "solicitacao-de-exames",
     "referral": "encaminhamento-interconsulta",
+    "dsf": "declaracao-servico-farmaceutico",
 }
 MAX_PRESCRIPTION_ITEMS = 15
 
@@ -900,6 +904,8 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
             payload = prescription_form(cid)
         elif kind == DOC_EXAM_REQUEST:
             payload = exam_request_form(cid, consultation)
+        elif kind == DOC_DSF:
+            payload = dsf_form(cid, consultation)
         else:
             payload = referral_form(cid)
 
@@ -992,6 +998,35 @@ def referral_form(cid: int) -> dict | None:
         st.warning("Preencha destino, resumo do caso, PRM e conduta sugerida.")
         return None
     return {"destination": destination, "case_summary": summary, "prm": prm, "suggested_conduct": conduct}
+
+
+def dsf_form(cid: int, consultation: dict) -> dict | None:
+    results = consultation["exam_results"]
+    if not results:
+        st.info("Para emitir a DSF, registre primeiro os resultados de exame neste atendimento "
+                "(seção Resultados de exames deste atendimento).")
+        return None
+    st.markdown("**Resultados que serão incluídos na declaração**")
+    st.dataframe(
+        [{"Exame": e["exam_name"], "Resultado": e["result"], "Unidade": e["unit"] or "—",
+          "Valor de referência": e["reference_range"] or "—", "Observações": e["notes"] or "—"} for e in results],
+        hide_index=True, width="stretch",
+    )
+    st.caption("Os resultados vêm do atendimento. Para corrigir algum, altere-o na seção "
+               "Resultados de exames deste atendimento.")
+    with st.form(f"dsf_form_{cid}"):
+        manufacturer = st.text_input("Fabricante do teste", max_chars=200, key=f"dsf_{cid}_manufacturer")
+        c1, c2 = st.columns(2)
+        lot = c1.text_input("Número do lote", max_chars=100, key=f"dsf_{cid}_lot")
+        expiry = c2.date_input("Data de validade", value=None, format="DD/MM/YYYY",
+                               min_value=date(2000, 1, 1), max_value=date(2100, 12, 31), key=f"dsf_{cid}_expiry")
+        submitted = st.form_submit_button("Gerar PDF", type="primary")
+    if not submitted:
+        return None
+    if not manufacturer.strip() or not lot.strip() or expiry is None:
+        st.warning("Informe o fabricante do teste, o número do lote e a data de validade.")
+        return None
+    return {"manufacturer": manufacturer, "lot": lot, "expiry_date": expiry.isoformat()}
 
 
 # --- main --------------------------------------------------------------------

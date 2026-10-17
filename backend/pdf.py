@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
+from fpdf.fonts import FontFace
 
 from backend.config import get_settings
 
@@ -36,6 +37,7 @@ LOGO_ASPECT = 1156 / 912  # width / height of IMG_1486.jpeg
 FOOTER_SPACE = 22
 SIGNATURE_BLOCK_HEIGHT = 48
 LONG_LABEL = 50  # mm; longer labels go on their own line
+NOTICE_FILL = (242, 242, 242)
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
@@ -68,6 +70,16 @@ class DocumentContext:
     pharmacist_crf: str
     consultation_date: date
     issued_at: datetime
+
+
+@dataclass(frozen=True)
+class ResultRow:
+    """One exam result as printed (a snapshot taken when the document is issued)."""
+    exam: str
+    result: str
+    unit: str
+    reference: str
+    notes: str
 
 
 def clean_text(value: str) -> str:
@@ -113,21 +125,24 @@ class DocumentPDF(FPDF):
     def header(self) -> None:
         est = self.context.establishment
         if self.page_no() == 1:
-            self.set_fill_color(*BAND)
-            self.rect(0, 0, self.w, BAND_HEIGHT, style="F")
             logo_w = BAND_HEIGHT * LOGO_ASPECT
-            self.image(str(LOGO_PATH), x=MARGIN - 6, y=0, h=BAND_HEIGHT)
             text_x = MARGIN - 6 + logo_w + 4
             text_w = self.w - text_x - MARGIN - 30
-            self.set_xy(text_x, 9)
-            self.set_text_color(*WHITE)
-            self.set_font(FONT, "B", 11)
-            self.multi_cell(text_w, 5.2, est.name, align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             contact = [v for v in (
                 est.address,
                 " · ".join(p for p in (f"CNPJ {est.cnpj}" if est.cnpj else "",
                                        f"Tel. {est.phone}" if est.phone else "") if p),
             ) if v]
+            # The band grows only when a long name/address would not fit in it.
+            band = max(BAND_HEIGHT, 9 + self._text_height(est.name, text_w, "B", 11, 5.2)
+                       + sum(self._text_height(line, text_w, "", 8, 4) for line in contact) + 4)
+            self.set_fill_color(*BAND)
+            self.rect(0, 0, self.w, band, style="F")
+            self.image(str(LOGO_PATH), x=MARGIN - 6, y=0, h=BAND_HEIGHT)
+            self.set_xy(text_x, 9)
+            self.set_text_color(*WHITE)
+            self.set_font(FONT, "B", 11)
+            self.multi_cell(text_w, 5.2, est.name, align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             self.set_text_color(*SILVER)
             self.set_font(FONT, "", 8)
             for line in contact:
@@ -136,7 +151,7 @@ class DocumentPDF(FPDF):
             self.set_xy(self.w - MARGIN - 30, 13)
             self.set_font(FONT, "B", 12)
             self.cell(30, 6, APP_NAME, align="R")
-            self.set_y(BAND_HEIGHT + 8)
+            self.set_y(band + 8)
         else:
             self.set_y(9)
             self.set_text_color(*MUTED)
@@ -161,6 +176,10 @@ class DocumentPDF(FPDF):
         self.cell(0, 4, f"{APP_NAME} · documento emitido em {issued}", align="L")
         self.set_x(MARGIN)
         self.cell(0, 4, f"Página {self.page_no()} de {{nb}}", align="R")
+
+    def _text_height(self, text: str, width: float, style: str, size: float, line_h: float) -> float:
+        self.set_font(FONT, style, size)
+        return len(self.multi_cell(width, line_h, text, dry_run=True, output="LINES")) * line_h
 
     def _fit(self, text: str, width: float) -> str:
         """Shorten single-line text with an ellipsis so it never overflows `width`."""
@@ -265,6 +284,48 @@ class DocumentPDF(FPDF):
         self.set_font(FONT, "B" if bold else "", 10.5 if bold else 10)
         self.set_text_color(*TEXT)
         self.multi_cell(0, 5.6, f"{number}. {clean_text(text)}", align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    def results_table(self, rows: list[ResultRow]) -> None:
+        """Exam results as a table; long values wrap, rows flow onto new pages with the
+        heading repeated. Observations take a full-width row under their exam."""
+        self.set_font(FONT, "", 9)
+        self.set_text_color(*TEXT)
+        self.set_draw_color(*RULE)
+        heading = FontFace(emphasis="BOLD", color=WHITE, fill_color=GRAPHITE)
+        notes_style = FontFace(color=MUTED, size_pt=8.5)
+        with self.table(col_widths=(38, 20, 14, 28), headings_style=heading, line_height=4.8,
+                        text_align="LEFT", padding=1.6, repeat_headings=1) as table:
+            table.row(["Exame", "Resultado", "Unidade", "Valor de referência"])
+            for row in rows:
+                table.row([clean_text(v) or "—" for v in (row.exam, row.result, row.unit, row.reference)])
+                notes = clean_text(row.notes)
+                if notes:
+                    table.row().cell(f"Observações: {notes}", colspan=4, style=notes_style)
+        self.ln(3)
+
+    def notice(self, label: str, text: str) -> None:
+        """Boxed notice, kept whole on one page."""
+        text = clean_text(text)
+        inner = self.epw - 8
+        self.set_font(FONT, "", 9.5)
+        lines = len(self.multi_cell(inner, 5, text, dry_run=True, output="LINES"))
+        height = 4 + 5 + lines * 5 + 4
+        if self.get_y() + height > self.page_break_trigger:
+            self.add_page()
+        top = self.get_y()
+        self.set_fill_color(*NOTICE_FILL)
+        self.set_draw_color(*RULE)
+        self.rect(MARGIN, top, self.epw, height, style="DF")
+        self.set_fill_color(*GRAPHITE)
+        self.rect(MARGIN, top, 1.2, height, style="F")
+        self.set_xy(MARGIN + 4, top + 4)
+        self.set_font(FONT, "B", 8.5)
+        self.set_text_color(*GRAPHITE)
+        self.cell(inner, 5, label.upper(), new_x=XPos.LEFT, new_y=YPos.NEXT)
+        self.set_font(FONT, "", 9.5)
+        self.set_text_color(*TEXT)
+        self.multi_cell(inner, 5, text, align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_y(top + height + 2)
 
     def closing(self) -> None:
         """Date line ("Data: DD/MM/AAAA", no city/UF) and signature/stamp area, kept together."""
