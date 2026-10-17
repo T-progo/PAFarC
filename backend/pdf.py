@@ -74,12 +74,16 @@ class DocumentContext:
 
 @dataclass(frozen=True)
 class ResultRow:
-    """One exam result as printed (a snapshot taken when the document is issued)."""
+    """One exam result as printed (a snapshot taken when the document is issued), with the
+    identification of the test/kit used for it."""
     exam: str
     result: str
     unit: str
     reference: str
     notes: str
+    manufacturer: str
+    lot: str
+    expiry_date: date
 
 
 def clean_text(value: str) -> str:
@@ -286,19 +290,29 @@ class DocumentPDF(FPDF):
         self.multi_cell(0, 5.6, f"{number}. {clean_text(text)}", align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     def results_table(self, rows: list[ResultRow]) -> None:
-        """Exam results as a table; long values wrap, rows flow onto new pages with the
-        heading repeated. Observations take a full-width row under their exam."""
+        """Exam results as a table. Each exam is a numbered group: its result row, the row
+        with its own test/kit identification and, when present, its observations. The number
+        cell spans the group, so a group is never split across pages; the heading repeats."""
         self.set_font(FONT, "", 9)
         self.set_text_color(*TEXT)
         self.set_draw_color(*RULE)
         heading = FontFace(emphasis="BOLD", color=WHITE, fill_color=GRAPHITE)
+        number_style = FontFace(emphasis="BOLD", fill_color=NOTICE_FILL)
+        kit_style = FontFace(size_pt=8.5, fill_color=NOTICE_FILL)
         notes_style = FontFace(color=MUTED, size_pt=8.5)
-        with self.table(col_widths=(38, 20, 14, 28), headings_style=heading, line_height=4.8,
+        with self.table(col_widths=(6, 36, 20, 13, 25), headings_style=heading, line_height=4.8,
                         text_align="LEFT", padding=1.6, repeat_headings=1) as table:
-            table.row(["Exame", "Resultado", "Unidade", "Valor de referência"])
-            for row in rows:
-                table.row([clean_text(v) or "—" for v in (row.exam, row.result, row.unit, row.reference)])
+            table.row(["Nº", "Exame", "Resultado", "Unidade", "Valor de referência"])
+            for number, row in enumerate(rows, start=1):
                 notes = clean_text(row.notes)
+                main = table.row()
+                main.cell(str(number), rowspan=3 if notes else 2, align="C", v_align="T", style=number_style)
+                for value in (row.exam, row.result, row.unit, row.reference):
+                    main.cell(clean_text(value) or "—")
+                kit = table.row()
+                kit.cell(f"Fabricante: {clean_text(row.manufacturer)}", style=kit_style)
+                kit.cell(f"Lote: {clean_text(row.lot)}", colspan=2, style=kit_style)
+                kit.cell(f"Validade: {format_date(row.expiry_date)}", style=kit_style)
                 if notes:
                     table.row().cell(f"Observações: {notes}", colspan=4, style=notes_style)
         self.ln(3)

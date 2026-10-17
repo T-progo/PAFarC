@@ -1006,27 +1006,43 @@ def dsf_form(cid: int, consultation: dict) -> dict | None:
         st.info("Para emitir a DSF, registre primeiro os resultados de exame neste atendimento "
                 "(seção Resultados de exames deste atendimento).")
         return None
-    st.markdown("**Resultados que serão incluídos na declaração**")
-    st.dataframe(
-        [{"Exame": e["exam_name"], "Resultado": e["result"], "Unidade": e["unit"] or "—",
-          "Valor de referência": e["reference_range"] or "—", "Observações": e["notes"] or "—"} for e in results],
-        hide_index=True, width="stretch",
-    )
-    st.caption("Os resultados vêm do atendimento. Para corrigir algum, altere-o na seção "
-               "Resultados de exames deste atendimento.")
+    st.markdown("**Exames que serão incluídos na declaração**")
+    st.caption("Os resultados vêm do atendimento (para corrigir algum, altere-o na seção Resultados de "
+               "exames deste atendimento). Informe abaixo o fabricante, o lote e a validade do teste/kit "
+               "usado em cada exame; podem ser diferentes para cada um.")
     with st.form(f"dsf_form_{cid}"):
-        manufacturer = st.text_input("Fabricante do teste", max_chars=200, key=f"dsf_{cid}_manufacturer")
-        c1, c2 = st.columns(2)
-        lot = c1.text_input("Número do lote", max_chars=100, key=f"dsf_{cid}_lot")
-        expiry = c2.date_input("Data de validade", value=None, format="DD/MM/YYYY",
-                               min_value=date(2000, 1, 1), max_value=date(2100, 12, 31), key=f"dsf_{cid}_expiry")
+        kits = []
+        for number, exam in enumerate(results, start=1):
+            eid = exam["id"]
+            with st.container(border=True):
+                st.markdown(f"**{number}. {md(exam['exam_name'])}**")
+                result = " ".join(v for v in (exam["result"], exam["unit"]) if v)
+                details = [f"Resultado: {md(result)}"]
+                if exam["reference_range"]:
+                    details.append(f"Valor de referência: {md(exam['reference_range'])}")
+                st.markdown(" · ".join(details))
+                if exam["notes"]:
+                    st.caption(f"Observações: {md(exam['notes'])}")
+                c1, c2, c3 = st.columns([3, 2, 2])
+                kits.append({
+                    "exam_result_id": eid,
+                    "manufacturer": c1.text_input("Fabricante do teste", max_chars=200,
+                                                  key=f"dsf_{cid}_{eid}_manufacturer"),
+                    "lot": c2.text_input("Número do lote", max_chars=100, key=f"dsf_{cid}_{eid}_lot"),
+                    "expiry": c3.date_input("Data de validade", value=None, format="DD/MM/YYYY",
+                                            min_value=date(2000, 1, 1), max_value=date(2100, 12, 31),
+                                            key=f"dsf_{cid}_{eid}_expiry"),
+                })
         submitted = st.form_submit_button("Gerar PDF", type="primary")
     if not submitted:
         return None
-    if not manufacturer.strip() or not lot.strip() or expiry is None:
-        st.warning("Informe o fabricante do teste, o número do lote e a data de validade.")
+    if any(not k["manufacturer"].strip() or not k["lot"].strip() or k["expiry"] is None for k in kits):
+        st.warning("Informe o fabricante, o número do lote e a data de validade de cada exame.")
         return None
-    return {"manufacturer": manufacturer, "lot": lot, "expiry_date": expiry.isoformat()}
+    return {"exam_metadata": [
+        {"exam_result_id": k["exam_result_id"], "manufacturer": k["manufacturer"], "lot": k["lot"],
+         "expiry_date": k["expiry"].isoformat()} for k in kits
+    ]}
 
 
 # --- main --------------------------------------------------------------------

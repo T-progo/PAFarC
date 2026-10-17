@@ -5,8 +5,8 @@ PharmaTech is the clinical pharmacy web application of **PAFarC** (Programa de A
 Pharmacists log in individually and can register and search patients, record consultations (SOAP and manually
 entered laboratory/exam results), review each patient's history and issue PDF documents: Prescrição / Plano de
 Cuidado, Solicitação de Exames Laboratoriais, Encaminhamento / Interconsulta and Declaração de Serviço
-Farmacêutico (DSF, built from the exam results recorded in the consultation plus the test's manufacturer, lot
-and expiry date entered at issue).
+Farmacêutico (DSF, built from the exam results recorded in the consultation plus, for each exam, the
+manufacturer, lot and expiry date of the test/kit used, entered at issue).
 
 ## Architecture
 

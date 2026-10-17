@@ -40,9 +40,8 @@ FILE_PREFIXES = {
 }
 # Client-provided wording, printed exactly as given.
 DSF_NOTICE = (
-    "Este exame possui finalidade de triagem e rastreamento, não sendo destinado à confirmação "
-    "diagnóstica. Os resultados devem ser avaliados por profissional legalmente habilitado e, quando "
-    "necessário, complementados por exames laboratoriais confirmatórios."
+    "Os exames realizados possuem finalidade de triagem, rastreamento e acompanhamento "
+    "farmacoterapêutico, não constituindo diagnóstico confirmatório isolado."
 )
 
 CurrentPharmacist = Annotated[Pharmacist, Depends(get_current_pharmacist)]
@@ -108,17 +107,14 @@ def build_referral(ctx: DocumentContext, data: ReferralIn) -> bytes:
     return pdf.to_bytes()
 
 
-def build_dsf(ctx: DocumentContext, results: list[ResultRow], data: DsfIn) -> bytes:
+def build_dsf(ctx: DocumentContext, results: list[ResultRow]) -> bytes:
     pdf = DocumentPDF(DOCUMENT_TITLES[DSF], ctx)
-    pdf.section("Resultados registrados no atendimento")
-    pdf.results_table(results)
-    pdf.section("Dados do teste")
-    pdf.labeled_line("Fabricante do teste", data.manufacturer)
-    pdf.labeled_line("Número do lote", data.lot)
-    pdf.labeled_line("Data de validade", format_date(data.expiry_date))
-    # The results belong to the consultation, so they were obtained on its date.
+    pdf.section("Exames realizados")
+    # Confirmed by the client: the date of performance is the consultation date.
     pdf.labeled_line("Data da realização", format_date(ctx.consultation_date))
-    pdf.ln(4)
+    pdf.ln(2)
+    pdf.results_table(results)
+    pdf.ln(2)
     pdf.notice("Aviso", DSF_NOTICE)
     pdf.closing()
     return pdf.to_bytes()
@@ -231,18 +227,31 @@ def generate_referral(
 def generate_dsf(
     patient_id: int, consultation_id: int, data: DsfIn, db: DB, pharmacist: CurrentPharmacist
 ) -> Response:
-    data.manufacturer = _required(data.manufacturer, "Informe o fabricante do teste.")
-    data.lot = _required(data.lot, "Informe o número do lote.")
     consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
-    # Results come only from the consultation (snapshot at issue); the request cannot supply them.
-    results = [
-        ResultRow(exam=e.exam_name, result=e.result, unit=e.unit, reference=e.reference_range, notes=e.notes)
-        for e in consultation.exam_results
-    ]
-    if not results:
+    exams = consultation.exam_results
+    if not exams:
         raise HTTPException(
             status_code=422,
             detail="Registre os resultados de exame neste atendimento antes de emitir a DSF.",
         )
-    return _issue(db, patient_id, consultation_id, pharmacist, DSF,
-                  lambda ctx: build_dsf(ctx, results, data))
+    # Kit entries are matched to this consultation's own exam results by id; every result
+    # needs exactly one entry. Exam data comes only from the consultation (snapshot at issue).
+    kits = {}
+    for kit in data.exam_metadata:
+        if kit.exam_result_id in kits:
+            raise HTTPException(status_code=422, detail="Exame repetido na DSF.")
+        kits[kit.exam_result_id] = kit
+    if set(kits) - {e.id for e in exams}:
+        raise HTTPException(status_code=422, detail="Exame não pertence a este atendimento.")
+    if len(kits) != len(exams):
+        raise HTTPException(status_code=422, detail="Informe fabricante, lote e validade de todos os exames.")
+    results = []
+    for e in exams:
+        kit = kits[e.id]
+        results.append(ResultRow(
+            exam=e.exam_name, result=e.result, unit=e.unit, reference=e.reference_range, notes=e.notes,
+            manufacturer=_required(kit.manufacturer, "Informe o fabricante do teste de cada exame."),
+            lot=_required(kit.lot, "Informe o número do lote de cada exame."),
+            expiry_date=kit.expiry_date,
+        ))
+    return _issue(db, patient_id, consultation_id, pharmacist, DSF, lambda ctx: build_dsf(ctx, results))

@@ -198,10 +198,17 @@ class ReferralIn(BaseModel):
     suggested_conduct: str = Field(max_length=5000)
 
 
-class DsfIn(BaseModel):
-    """Test identification entered when the DSF is issued. The exam results themselves
-    are read from the consultation; they are never accepted from the request."""
+class DsfExamKit(BaseModel):
+    """Identification of the test/kit used for one recorded exam result, entered at issue."""
 
+    exam_result_id: int
     manufacturer: str = Field(max_length=200)
     lot: str = Field(max_length=100)
     expiry_date: date
+
+
+class DsfIn(BaseModel):
+    """One kit entry per exam result of the consultation. The results themselves (exam,
+    result, unit, reference, notes) are read from the consultation, never from the request."""
+
+    exam_metadata: list[DsfExamKit] = Field(max_length=200)
