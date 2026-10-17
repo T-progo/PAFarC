@@ -118,7 +118,15 @@ class SoapOut(SoapIn):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ExamResultIn(BaseModel):
+class ExamKit(BaseModel):
+    """Identification of the test/kit used for an exam result (all optional)."""
+
+    manufacturer: str | None = Field(default=None, max_length=200)
+    lot: str | None = Field(default=None, max_length=100)
+    expiry_date: date | None = None
+
+
+class ExamResultIn(ExamKit):
     exam_name: str = Field(max_length=200)
     result: str = Field(max_length=200)
     unit: str = Field(default="", max_length=50)
@@ -132,6 +140,10 @@ class ExamResultOut(ExamResultIn):
     id: int
     consultation_id: int
     created_at: datetime
+
+
+class ExamKitQuery(BaseModel):
+    exam_name: str = Field(min_length=1, max_length=200)
 
 
 class ConsultationSummary(BaseModel):
@@ -197,18 +209,3 @@ class ReferralIn(BaseModel):
     prm: str = Field(max_length=5000)
     suggested_conduct: str = Field(max_length=5000)
 
-
-class DsfExamKit(BaseModel):
-    """Identification of the test/kit used for one recorded exam result, entered at issue."""
-
-    exam_result_id: int
-    manufacturer: str = Field(max_length=200)
-    lot: str = Field(max_length=100)
-    expiry_date: date
-
-
-class DsfIn(BaseModel):
-    """One kit entry per exam result of the consultation. The results themselves (exam,
-    result, unit, reference, notes) are read from the consultation, never from the request."""
-
-    exam_metadata: list[DsfExamKit] = Field(max_length=200)

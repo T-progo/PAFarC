@@ -13,6 +13,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_client import ApiError, PharmaTechAPI  # noqa: E402
+from exam_kit import EMPTY_KIT, kit_from_api, merge_kit_suggestion  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PHARMATECH_LOGO = ROOT / "IMG_1485.jpeg"
@@ -606,7 +607,15 @@ EXAM_COLUMNS = [
     ("unit", "Unidade"),
     ("reference_range", "Valor/Intervalo de Referência"),
     ("notes", "Observações"),
+    ("manufacturer", "Fabricante"),
+    ("lot", "Lote"),
+    ("expiry_date", "Validade"),
 ]
+
+
+def exam_table_rows(exams: list[dict]) -> list[dict]:
+    return [{label: (format_date(exam[key]) if key == "expiry_date" and exam[key] else exam[key] or "")
+             for key, label in EXAM_COLUMNS} for exam in exams]
 
 
 def consultation_view(patient_id: int, consultation_id: int) -> None:
@@ -700,11 +709,7 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
     with st.container(border=True):
         st.subheader("Resultados de exames deste atendimento")
         if exams:
-            st.dataframe(
-                [{label: exam[key] for key, label in EXAM_COLUMNS} for exam in exams],
-                hide_index=True,
-                width="stretch",
-            )
+            st.dataframe(exam_table_rows(exams), hide_index=True, width="stretch")
         else:
             st.markdown('<p class="pt-muted">Nenhum resultado registrado.</p>', unsafe_allow_html=True)
         if not editable:
@@ -714,9 +719,11 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
         # successful add/edit/delete gives the browser fresh (empty/unselected) widgets.
         gen = exam_widgets_generation(cid)
         st.markdown("**Adicionar resultado**")
-        with st.form(f"exam_add_{cid}_{gen}"):
-            new_exam = exam_inputs(f"exam_new_{cid}_{gen}", {})
-            submitted = st.form_submit_button("Adicionar exame", type="primary")
+        # Not an st.form: entering the exam name must update the suggested kit right away.
+        with st.container(border=True):
+            prefix = f"exam_new_{cid}_{gen}"
+            new_exam = exam_inputs(prefix, {}, adding=True)
+            submitted = st.button("Adicionar exame", type="primary", key=f"{prefix}_add")
         if submitted:
             save_exam(patient_id, cid, None, new_exam, "Exame adicionado.")
 
@@ -753,11 +760,7 @@ def previous_exams_section(patient_id: int, cid: int) -> None:
             title = (f"{format_date(group['consultation_date'])} · {pharmacist['full_name']} · "
                      f"{pharmacist['crf']} · {len(group['exam_results'])} exame(s)")
             with st.expander(title, expanded=index == 0):
-                st.dataframe(
-                    [{label: exam[key] for key, label in EXAM_COLUMNS} for exam in group["exam_results"]],
-                    hide_index=True,
-                    width="stretch",
-                )
+                st.dataframe(exam_table_rows(group["exam_results"]), hide_index=True, width="stretch")
 
 
 def exam_widgets_generation(cid: int) -> int:
@@ -768,10 +771,53 @@ def reset_exam_widgets(cid: int) -> None:
     st.session_state[f"exam_gen_{cid}"] = exam_widgets_generation(cid) + 1
 
 
-def exam_inputs(prefix: str, exam: dict) -> dict:
+def suggest_exam_kit(prefix: str) -> None:
+    """Add form, on exam-name change: fill Fabricante/Lote/Validade with the last kit this
+    pharmacist used for the same exam. Fields the pharmacist has changed are left alone."""
+    name = st.session_state.get(f"{prefix}_name", "").strip()
+    kit = {}
+    if name:
+        try:
+            kit = api().exam_kit_suggestion(name)
+        except ApiError:
+            kit = {}
+    new = kit_from_api(kit)
+    previous = st.session_state.get(f"{prefix}_suggested", EMPTY_KIT)
+    current = {field: st.session_state.get(f"{prefix}_{field}") for field in EMPTY_KIT}
+    for field, value in merge_kit_suggestion(current, previous, new).items():
+        st.session_state[f"{prefix}_{field}"] = value
+    st.session_state[f"{prefix}_suggested"] = new
+
+
+def kit_inputs(prefix: str, exam: dict | None) -> dict:
+    """Fabricante/Lote/Validade of an exam result. Add form (exam None): the values live in
+    session state so the last-used kit can be suggested; edit form: the result's own values."""
+    if exam is None:
+        for field, default in EMPTY_KIT.items():
+            st.session_state.setdefault(f"{prefix}_{field}", default)
+        initial = {"manufacturer": {}, "lot": {}, "expiry": {}}
+        suggested = st.session_state.get(f"{prefix}_suggested") or {}
+        if suggested.get("manufacturer"):
+            st.caption("Fabricante, lote e validade preenchidos com o último uso deste exame. "
+                       "Altere se o kit/teste for outro.")
+    else:
+        expiry = date.fromisoformat(exam["expiry_date"]) if exam.get("expiry_date") else None
+        initial = {"manufacturer": {"value": exam.get("manufacturer") or ""},
+                   "lot": {"value": exam.get("lot") or ""}, "expiry": {"value": expiry}}
+    c1, c2, c3 = st.columns([3, 2, 2])
+    manufacturer = c1.text_input("Fabricante", max_chars=200, key=f"{prefix}_manufacturer", **initial["manufacturer"])
+    lot = c2.text_input("Lote", max_chars=100, key=f"{prefix}_lot", **initial["lot"])
+    expiry = c3.date_input("Validade", format="DD/MM/YYYY", min_value=date(2000, 1, 1),
+                           max_value=date(2100, 12, 31), key=f"{prefix}_expiry", **initial["expiry"])
+    return {"manufacturer": manufacturer, "lot": lot, "expiry_date": expiry.isoformat() if expiry else None}
+
+
+def exam_inputs(prefix: str, exam: dict, adding: bool = False) -> dict:
     col1, col2, col3 = st.columns([3, 2, 1])
     values = {
-        "exam_name": col1.text_input("Exame", value=exam.get("exam_name", ""), key=f"{prefix}_name"),
+        "exam_name": col1.text_input("Exame", value=exam.get("exam_name", ""), key=f"{prefix}_name",
+                                     on_change=suggest_exam_kit if adding else None,
+                                     args=(prefix,) if adding else None),
         "result": col2.text_input("Resultado", value=exam.get("result", ""), key=f"{prefix}_result"),
         "unit": col3.text_input("Unidade", value=exam.get("unit", ""), key=f"{prefix}_unit"),
     }
@@ -779,6 +825,7 @@ def exam_inputs(prefix: str, exam: dict) -> dict:
         "Valor/Intervalo de Referência", value=exam.get("reference_range", ""), key=f"{prefix}_reference"
     )
     values["notes"] = st.text_input("Observações", value=exam.get("notes", ""), key=f"{prefix}_notes")
+    values.update(kit_inputs(prefix, None if adding else exam))
     return values
 
 
@@ -1007,42 +1054,18 @@ def dsf_form(cid: int, consultation: dict) -> dict | None:
                 "(seção Resultados de exames deste atendimento).")
         return None
     st.markdown("**Exames que serão incluídos na declaração**")
-    st.caption("Os resultados vêm do atendimento (para corrigir algum, altere-o na seção Resultados de "
-               "exames deste atendimento). Informe abaixo o fabricante, o lote e a validade do teste/kit "
-               "usado em cada exame; podem ser diferentes para cada um.")
-    with st.form(f"dsf_form_{cid}"):
-        kits = []
-        for number, exam in enumerate(results, start=1):
-            eid = exam["id"]
-            with st.container(border=True):
-                st.markdown(f"**{number}. {md(exam['exam_name'])}**")
-                result = " ".join(v for v in (exam["result"], exam["unit"]) if v)
-                details = [f"Resultado: {md(result)}"]
-                if exam["reference_range"]:
-                    details.append(f"Valor de referência: {md(exam['reference_range'])}")
-                st.markdown(" · ".join(details))
-                if exam["notes"]:
-                    st.caption(f"Observações: {md(exam['notes'])}")
-                c1, c2, c3 = st.columns([3, 2, 2])
-                kits.append({
-                    "exam_result_id": eid,
-                    "manufacturer": c1.text_input("Fabricante do teste", max_chars=200,
-                                                  key=f"dsf_{cid}_{eid}_manufacturer"),
-                    "lot": c2.text_input("Número do lote", max_chars=100, key=f"dsf_{cid}_{eid}_lot"),
-                    "expiry": c3.date_input("Data de validade", value=None, format="DD/MM/YYYY",
-                                            min_value=date(2000, 1, 1), max_value=date(2100, 12, 31),
-                                            key=f"dsf_{cid}_{eid}_expiry"),
-                })
-        submitted = st.form_submit_button("Gerar PDF", type="primary")
-    if not submitted:
+    st.dataframe(exam_table_rows(results), hide_index=True, width="stretch")
+    missing = [exam["exam_name"] for exam in results
+               if not (exam["manufacturer"] and exam["lot"] and exam["expiry_date"])]
+    if missing:
+        st.warning("Complete Fabricante, Lote e Validade na seção “Resultados de exames deste atendimento” "
+                   f"para emitir a DSF. Exame(s) sem esses dados: {md(', '.join(missing))}.")
         return None
-    if any(not k["manufacturer"].strip() or not k["lot"].strip() or k["expiry"] is None for k in kits):
-        st.warning("Informe o fabricante, o número do lote e a data de validade de cada exame.")
-        return None
-    return {"exam_metadata": [
-        {"exam_result_id": k["exam_result_id"], "manufacturer": k["manufacturer"], "lot": k["lot"],
-         "expiry_date": k["expiry"].isoformat()} for k in kits
-    ]}
+    st.caption("Todos os dados vêm dos resultados de exame deste atendimento, incluindo fabricante, "
+               "lote e validade de cada um. Para corrigir algo, altere o resultado na seção acima.")
+    if st.button("Gerar PDF", type="primary", key=f"dsf_generate_{cid}"):
+        return {}
+    return None
 
 
 # --- main --------------------------------------------------------------------

@@ -6,18 +6,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_pharmacist, require_clinical
+from backend.crypto import get_crypto
 from backend.database import get_db
 from backend.models import Consultation, ExamResult, Patient, Pharmacist, SoapRecord
+from backend.patients import normalize_name
 from backend.schemas import (
     ConsultationCreate,
     ConsultationOut,
     ConsultationSummary,
+    ExamKit,
+    ExamKitQuery,
     ExamResultIn,
     ExamResultOut,
     PreviousExamGroup,
     SoapIn,
     SoapOut,
 )
+
+EXAM_NAME_PURPOSE = "exam.name"
 
 CurrentPharmacist = Annotated[Pharmacist, Depends(get_current_pharmacist)]
 DB = Annotated[Session, Depends(get_db)]
@@ -65,12 +71,21 @@ def _get_exam(consultation: Consultation, exam_id: int) -> ExamResult:
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resultado de exame não encontrado.")
 
 
-def _clean_exam(data: ExamResultIn) -> dict[str, str]:
-    values = {k: v.strip() for k, v in data.model_dump().items()}
+def exam_name_index(exam_name: str) -> str:
+    """Same exam = same name after trimming, collapsing spaces, removing accents and case
+    (the normalization already used for patient names); no approximate matching."""
+    return get_crypto().blind_index(EXAM_NAME_PURPOSE, normalize_name(exam_name))
+
+
+def _clean_exam(data: ExamResultIn) -> dict:
+    values = {k: v.strip() if isinstance(v, str) else v for k, v in data.model_dump().items()}
     if not values["exam_name"]:
         raise HTTPException(status_code=422, detail="Informe o nome do exame.")
     if not values["result"]:
         raise HTTPException(status_code=422, detail="Informe o resultado do exame.")
+    for key in ("manufacturer", "lot"):  # optional kit fields: blank means not informed
+        values[key] = values[key] or None
+    values["exam_name_index"] = exam_name_index(values["exam_name"])
     return values
 
 
@@ -203,3 +218,32 @@ def delete_exam_result(
     _touch(consultation)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# Kit suggestion: last test/kit identification the pharmacist used for the same exam.
+kit_router = APIRouter(prefix="/exam-kit-suggestion", tags=["consultations"],
+                       dependencies=[Depends(require_clinical)])
+
+
+@kit_router.post("", response_model=ExamKit)
+def exam_kit_suggestion(data: ExamKitQuery, db: DB, pharmacist: CurrentPharmacist) -> ExamKit:
+    """Fabricante/Lote/Validade of the most recently recorded result of the same exam, among
+    this pharmacist's own consultations, that has all three filled in. Only those three
+    values are returned (empty when there is none). POST so exam names stay out of URLs/logs."""
+    latest = db.scalars(
+        select(ExamResult)
+        .join(Consultation, ExamResult.consultation_id == Consultation.id)
+        .where(
+            Consultation.pharmacist_id == pharmacist.id,
+            ExamResult.exam_name_index == exam_name_index(data.exam_name),
+            ExamResult.manufacturer.is_not(None),
+            ExamResult.lot.is_not(None),
+            ExamResult.expiry_date.is_not(None),
+        )
+        .order_by(ExamResult.created_at.desc(), ExamResult.id.desc())
+        .limit(1)
+    ).first()
+    if latest is None:
+        return ExamKit()
+    return ExamKit(manufacturer=latest.manufacturer, lot=latest.lot, expiry_date=latest.expiry_date)
+

@@ -171,9 +171,20 @@ class ExamResult(Base):
     unit: Mapped[str] = mapped_column("unit_encrypted", EncryptedString)
     reference_range: Mapped[str] = mapped_column("reference_range_encrypted", EncryptedString)
     notes: Mapped[str] = mapped_column("notes_encrypted", EncryptedString)
+    # Identification of the test/kit used (optional; empty on results recorded before it existed).
+    manufacturer: Mapped[str | None] = mapped_column("manufacturer_encrypted", EncryptedString, nullable=True)
+    lot: Mapped[str | None] = mapped_column("lot_encrypted", EncryptedString, nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column("expiry_date_encrypted", EncryptedDate, nullable=True)
+    # Keyed digest of the normalized exam name, to find the same exam's last kit without
+    # decrypting names (set whenever a result is saved).
+    exam_name_index: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     consultation: Mapped[Consultation] = relationship(back_populates="exam_results")
+
+    @property
+    def has_kit(self) -> bool:
+        return bool(self.manufacturer and self.lot and self.expiry_date)
 
 
 class GeneratedDocument(Base):

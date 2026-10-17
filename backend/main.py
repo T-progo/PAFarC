@@ -36,6 +36,7 @@ app = FastAPI(
 app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(consultations.router)
+app.include_router(consultations.kit_router)
 app.include_router(documents.router)
 app.include_router(admin.router)
 

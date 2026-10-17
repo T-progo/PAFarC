@@ -5,8 +5,9 @@ PharmaTech is the clinical pharmacy web application of **PAFarC** (Programa de A
 Pharmacists log in individually and can register and search patients, record consultations (SOAP and manually
 entered laboratory/exam results), review each patient's history and issue PDF documents: Prescrição / Plano de
 Cuidado, Solicitação de Exames Laboratoriais, Encaminhamento / Interconsulta and Declaração de Serviço
-Farmacêutico (DSF, built from the exam results recorded in the consultation plus, for each exam, the
-manufacturer, lot and expiry date of the test/kit used, entered at issue).
+Farmacêutico (DSF, built from the exam results recorded in the consultation, including the manufacturer,
+lot and expiry date of the test/kit stored with each result; the last kit used for the same exam is suggested
+when it is entered again).
 
 ## Architecture
 
@@ -295,6 +296,7 @@ Tests use a temporary database and test-only keys; they never touch the real dat
 | PUT | `/patients/{id}/consultations/{cid}/soap` | Save SOAP |
 | POST / PUT / DELETE | `/patients/{id}/consultations/{cid}/exams[/{eid}]` | Add / edit / delete exam result |
 | GET | `/patients/{id}/consultations/{cid}/previous-exams` | Exam results of earlier consultations (read-only) |
+| POST | `/exam-kit-suggestion` | Last Fabricante/Lote/Validade the pharmacist used for the same exam name |
 | POST | `/patients/{id}/consultations/{cid}/documents/{prescription,exam-request,referral,dsf}` | Generate PDF |
 | GET | `/patients/{id}/consultations/{cid}/documents/{doc_id}` | Reprint: the stored PDF exactly as issued |
 

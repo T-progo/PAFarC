@@ -20,7 +20,7 @@ from backend.database import get_db
 from backend.models import GeneratedDocument, Pharmacist
 from backend.establishments import NoEstablishmentError, document_header_for
 from backend.pdf import DocumentContext, DocumentPDF, ResultRow, clean_text, format_date
-from backend.schemas import DsfIn, ExamRequestIn, PrescriptionIn, ReferralIn
+from backend.schemas import ExamRequestIn, PrescriptionIn, ReferralIn
 
 PRESCRIPTION = "prescription"
 EXAM_REQUEST = "exam_request"
@@ -224,9 +224,9 @@ def generate_referral(
 
 
 @router.post("/dsf", response_class=Response)
-def generate_dsf(
-    patient_id: int, consultation_id: int, data: DsfIn, db: DB, pharmacist: CurrentPharmacist
-) -> Response:
+def generate_dsf(patient_id: int, consultation_id: int, db: DB, pharmacist: CurrentPharmacist) -> Response:
+    """Everything comes from the consultation's own exam results, including each result's
+    stored Fabricante/Lote/Validade; the request has no content (any body is ignored)."""
     consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
     exams = consultation.exam_results
     if not exams:
@@ -234,24 +234,16 @@ def generate_dsf(
             status_code=422,
             detail="Registre os resultados de exame neste atendimento antes de emitir a DSF.",
         )
-    # Kit entries are matched to this consultation's own exam results by id; every result
-    # needs exactly one entry. Exam data comes only from the consultation (snapshot at issue).
-    kits = {}
-    for kit in data.exam_metadata:
-        if kit.exam_result_id in kits:
-            raise HTTPException(status_code=422, detail="Exame repetido na DSF.")
-        kits[kit.exam_result_id] = kit
-    if set(kits) - {e.id for e in exams}:
-        raise HTTPException(status_code=422, detail="Exame não pertence a este atendimento.")
-    if len(kits) != len(exams):
-        raise HTTPException(status_code=422, detail="Informe fabricante, lote e validade de todos os exames.")
-    results = []
-    for e in exams:
-        kit = kits[e.id]
-        results.append(ResultRow(
-            exam=e.exam_name, result=e.result, unit=e.unit, reference=e.reference_range, notes=e.notes,
-            manufacturer=_required(kit.manufacturer, "Informe o fabricante do teste de cada exame."),
-            lot=_required(kit.lot, "Informe o número do lote de cada exame."),
-            expiry_date=kit.expiry_date,
-        ))
+    incomplete = [e.exam_name for e in exams if not e.has_kit]
+    if incomplete:
+        raise HTTPException(
+            status_code=422,
+            detail="Complete Fabricante, Lote e Validade em “Resultados de exames deste atendimento” "
+                   f"antes de emitir a DSF. Exame(s) sem esses dados: {', '.join(incomplete)}.",
+        )
+    results = [  # snapshot at issue; later edits never change an issued DSF
+        ResultRow(exam=e.exam_name, result=e.result, unit=e.unit, reference=e.reference_range, notes=e.notes,
+                  manufacturer=e.manufacturer, lot=e.lot, expiry_date=e.expiry_date)
+        for e in exams
+    ]
     return _issue(db, patient_id, consultation_id, pharmacist, DSF, lambda ctx: build_dsf(ctx, results))

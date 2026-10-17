@@ -1,5 +1,5 @@
-"""Declaração de Serviço Farmacêutico (DSF): built from the consultation's recorded exam
-results plus, for each exam, the test/kit identification entered at issue. Fictitious data only."""
+"""Declaração de Serviço Farmacêutico (DSF): built entirely from the consultation's recorded exam
+results, including each result's stored Fabricante/Lote/Validade. Fictitious data only."""
 import hashlib
 import io
 import re
@@ -60,20 +60,23 @@ def env(client, db):
     cid = client.post(f"/patients/{pid}/consultations", json={"consultation_date": "2026-01-12"},
                       headers=a).json()["id"]
     base = f"/patients/{pid}/consultations/{cid}"
-    exam_ids = [client.post(f"{base}/exams", json=exam, headers=a).json()["id"] for exam in EXAMS]
+    exam_ids = [client.post(f"{base}/exams", headers=a, json={
+        **exam, "manufacturer": kit[0], "lot": kit[1], "expiry_date": kit[2]}).json()["id"]
+        for exam, kit in zip(EXAMS, KITS)]
     return {"admin": admin, "a": a, "b": b, "pid": pid, "cid": cid, "est_a": est_a, "est_b": est_b,
             "a_id": ids["a@dsf.test"], "base": base, "exam_ids": exam_ids}
 
 
-def _metadata(exam_ids, kits=KITS):
-    return {"exam_metadata": [{"exam_result_id": i, "manufacturer": m, "lot": lot, "expiry_date": d}
-                              for i, (m, lot, d, _) in zip(exam_ids, kits)]}
-
-
 def _dsf(client, env, payload=None, headers=None, base=None):
-    return client.post(f"{base or env['base']}/documents/dsf",
-                       json=_metadata(env["exam_ids"]) if payload is None else payload,
+    return client.post(f"{base or env['base']}/documents/dsf", json={} if payload is None else payload,
                        headers=env["a"] if headers is None else headers)
+
+
+def _add_exam(client, env, base=None, **fields):
+    exam = {"exam_name": "Exame extra", "result": "1", **fields}
+    r = client.post(f"{base or env['base']}/exams", headers=env["a"], json=exam)
+    assert r.status_code == 201
+    return r.json()["id"]
 
 
 def _group(text, number, next_number=None):
@@ -105,9 +108,9 @@ def test_unauthenticated_gets_401(client, env):
     assert _dsf(client, env, headers={}).status_code == 401
 
 
-# --- per-exam kit metadata --------------------------------------------------------------
+# --- stored per-exam kit -----------------------------------------------------------------
 
-def test_each_exam_has_its_own_kit_metadata(client, env):
+def test_each_exam_uses_its_own_stored_kit(client, env):
     text = pdf_text(_dsf(client, env).content)
     groups = [_group(text, 1, 2), _group(text, 2, 3), _group(text, 3)]
     for n, (group, (manufacturer, lot, _, expiry)) in enumerate(zip(groups, KITS)):
@@ -116,85 +119,43 @@ def test_each_exam_has_its_own_kit_metadata(client, env):
             assert other[0] not in group and other[1] not in group and other[3] not in group
 
 
-def test_kit_metadata_follows_the_exam_id_not_the_list_order(client, env):
-    ids = env["exam_ids"]
-    payload = _metadata([ids[2], ids[0], ids[1]], [KITS[2], KITS[0], KITS[1]])  # same pairs, shuffled order
-    text = pdf_text(_dsf(client, env, payload).content)
-    assert "Lote: LOTE-ALFA-001" in _group(text, 1, 2)
-    assert "Lote: LOTE-BETA-002" in _group(text, 2, 3)
-    assert "Lote: LOTE-GAMA-003" in _group(text, 3)
-    swapped = pdf_text(_dsf(client, env, _metadata([ids[1], ids[0], ids[2]])).content)  # A and B swapped
-    assert "Lote: LOTE-BETA-001" not in swapped
-    assert "Lote: LOTE-ALFA-001" in _group(swapped, 2, 3) and "Lote: LOTE-BETA-002" in _group(swapped, 1, 2)
+def test_request_cannot_override_the_stored_kit(client, env):
+    forged = {"exam_metadata": [{"exam_result_id": i, "manufacturer": "FAB FORJADO", "lot": "LOTE FORJADO",
+                                 "expiry_date": "1999-01-01"} for i in env["exam_ids"]],
+              "manufacturer": "FAB FORJADO", "lot": "LOTE FORJADO", "expiry_date": "1999-01-01"}
+    text = pdf_text(_dsf(client, env, forged).content)
+    assert "FORJADO" not in text and "1999" not in text
+    assert all(f"Lote: {lot}" in text for _, lot, _, _ in KITS)
 
 
-def test_unknown_exam_id_rejected(client, env):
-    payload = _metadata(env["exam_ids"])
-    payload["exam_metadata"].append({"exam_result_id": 99999, "manufacturer": "X", "lot": "X",
-                                     "expiry_date": "2027-01-01"})
-    r = _dsf(client, env, payload)
-    assert r.status_code == 422 and "não pertence" in r.json()["detail"]
-
-
-def test_exam_id_from_another_consultation_rejected(client, env):
-    other_cid = client.post(f"/patients/{env['pid']}/consultations", json={}, headers=env["a"]).json()["id"]
-    other_base = f"/patients/{env['pid']}/consultations/{other_cid}"
-    other_exam = client.post(f"{other_base}/exams", json={"exam_name": "Outro", "result": "1"},
-                             headers=env["a"]).json()["id"]
-    ids = env["exam_ids"]
-    r = _dsf(client, env, _metadata([ids[0], ids[1], other_exam]))
-    assert r.status_code == 422 and "não pertence" in r.json()["detail"]
-    # and the other consultation's DSF cannot use this consultation's exams
-    r = _dsf(client, env, _metadata([other_exam, ids[0]]), base=other_base)
+@pytest.mark.parametrize("missing", ["manufacturer", "lot", "expiry_date"])
+def test_any_exam_without_complete_kit_blocks_the_dsf(client, env, missing):
+    kit = {"manufacturer": "Fab", "lot": "L1", "expiry_date": "2027-01-01"}
+    kit[missing] = None
+    _add_exam(client, env, exam_name="Ureia sem kit", **kit)
+    r = _dsf(client, env)
     assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "Complete Fabricante, Lote e Validade" in detail and "Resultados de exames deste atendimento" in detail
+    assert "Ureia sem kit" in detail and "Glicemia capilar" not in detail
+    assert client.get(env["base"], headers=env["a"]).json()["documents"] == []
 
 
-def test_duplicate_exam_id_rejected(client, env):
-    ids = env["exam_ids"]
-    r = _dsf(client, env, _metadata([ids[0], ids[0], ids[1], ids[2]], KITS + [KITS[0]]))
-    assert r.status_code == 422 and "repetido" in r.json()["detail"]
-
-
-@pytest.mark.parametrize("count", [0, 2])
-def test_missing_metadata_rejected(client, env, count):
-    r = _dsf(client, env, _metadata(env["exam_ids"][:count]))
-    assert r.status_code == 422 and "todos os exames" in r.json()["detail"]
-
-
-@pytest.mark.parametrize("field, value, detail", [
-    ("manufacturer", "   ", "fabricante"), ("lot", "", "lote"),
-])
-def test_blank_manufacturer_or_lot_rejected(client, env, field, value, detail):
-    payload = _metadata(env["exam_ids"])
-    payload["exam_metadata"][1][field] = value
-    r = _dsf(client, env, payload)
-    assert r.status_code == 422 and detail in r.json()["detail"]
-
-
-@pytest.mark.parametrize("change", [
-    {"expiry_date": "31/02/2027"}, {"expiry_date": "2027-02-31"}, {"expiry_date": ""}, {"expiry_date": None},
-    {"manufacturer": "x" * 201}, {"lot": "x" * 101}, {"exam_result_id": "abc"},
-])
-def test_invalid_metadata_rejected(client, env, change):
-    payload = _metadata(env["exam_ids"])
-    payload["exam_metadata"][0].update(change)
-    assert _dsf(client, env, payload).status_code == 422
-
-
-@pytest.mark.parametrize("missing", ["expiry_date", "lot", "manufacturer", "exam_result_id"])
-def test_missing_metadata_field_rejected(client, env, missing):
-    payload = _metadata(env["exam_ids"])
-    del payload["exam_metadata"][0][missing]
-    assert _dsf(client, env, payload).status_code == 422
+def test_completing_the_kit_allows_the_dsf(client, env):
+    exam_id = _add_exam(client, env, exam_name="Ureia")
+    assert _dsf(client, env).status_code == 422
+    client.put(f"{env['base']}/exams/{exam_id}", headers=env["a"], json={
+        "exam_name": "Ureia", "result": "1", "manufacturer": "Fab U", "lot": "LOTE-U", "expiry_date": "2020-05-01"})
+    r = _dsf(client, env)  # a past expiry date is informational only
+    assert r.status_code == 200 and "Validade: 01/05/2020" in pdf_text(r.content)
 
 
 # --- authoritative data ------------------------------------------------------------------
 
 def test_request_cannot_override_exam_data_or_identities(client, env):
-    payload = _metadata(env["exam_ids"])
-    for entry in payload["exam_metadata"]:
-        entry.update({"exam_name": "EXAME FORJADO", "result": "RESULTADO FORJADO", "unit": "UNIDADE FORJADA",
-                      "reference_range": "REFERENCIA FORJADA", "notes": "OBSERVACAO FORJADA"})
+    payload = {"exam_metadata": [{"exam_result_id": i, "exam_name": "EXAME FORJADO", "result": "RESULTADO FORJADO",
+                                  "unit": "UNIDADE FORJADA", "reference_range": "REFERENCIA FORJADA",
+                                  "notes": "OBSERVACAO FORJADA"} for i in env["exam_ids"]]}
     payload.update({"exam_results": [{"exam_name": "EXAME FORJADO"}], "consultation_date": "1999-01-01",
                     "performance_date": "1999-01-01", "establishment_id": env["est_b"], "establishment": EST_B,
                     "patient_name": "PACIENTE FORJADO", "pharmacist_name": "FARM FORJADO", "crf": "CRF/XX 999"})
@@ -249,16 +210,16 @@ def test_many_results_span_pages_keeping_each_exam_together(client, env):
     for i in range(30):
         client.post(f"{env['base']}/exams", headers=env["a"], json={
             "exam_name": f"Teste rápido {i + 1}", "result": "Não reagente", "reference_range": "Não reagente",
-            "notes": "Sem intercorrências."})
+            "notes": "Sem intercorrências.", "manufacturer": f"Fab {i + 3}", "lot": f"LOTE-{i + 3:03d}",
+            "expiry_date": "2027-01-01"})
     exams = client.get(env["base"], headers=env["a"]).json()["exam_results"]
-    kits = [(f"Fab {n}", f"LOTE-{n:03d}", "2027-01-01", "") for n in range(len(exams))]
-    data = _dsf(client, env, _metadata([e["id"] for e in exams], kits)).content
+    data = _dsf(client, env).content
     reader = PdfReader(io.BytesIO(data))
     pages = len(reader.pages)
     assert pages >= 3
     page_texts = [" ".join((p.extract_text() or "").split()) for p in reader.pages]
-    for n, exam in enumerate(exams):  # an exam's result and its own lot are on the same page
-        lot = f"Lote: LOTE-{n:03d}"
+    for exam in exams[3:]:  # an exam's result and its own lot are on the same page
+        lot = f"Lote: {exam['lot']}"
         page = next(i for i, t in enumerate(page_texts) if lot in t)
         assert exam["exam_name"][:20] in page_texts[page]
     text = " ".join(page_texts)
@@ -270,7 +231,7 @@ def test_many_results_span_pages_keeping_each_exam_together(client, env):
 def test_consultation_without_exam_results_is_rejected(client, env):
     cid = client.post(f"/patients/{env['pid']}/consultations", json={}, headers=env["a"]).json()["id"]
     base = f"/patients/{env['pid']}/consultations/{cid}"
-    r = _dsf(client, env, {"exam_metadata": []}, base=base)
+    r = _dsf(client, env, base=base)
     assert r.status_code == 422 and "Registre os resultados de exame" in r.json()["detail"]
     assert client.get(base, headers=env["a"]).json()["documents"] == []
 
@@ -286,12 +247,14 @@ def test_dsf_history_and_byte_identical_reprint_after_source_changes(client, env
 
     ids = env["exam_ids"]
     client.put(f"{env['base']}/exams/{ids[0]}", headers=env["a"],
-               json={"exam_name": "Glicemia ALTERADA", "result": "250", "unit": "mg/dL"})
+               json={"exam_name": "Glicemia ALTERADA", "result": "250", "unit": "mg/dL", "manufacturer": "Fab X",
+                     "lot": "LOTE-X", "expiry_date": "2028-01-01"})
     client.delete(f"{env['base']}/exams/{ids[2]}", headers=env["a"])
     client.patch(f"/admin/establishments/{env['est_a']}", headers=env["admin"], json={"name": "Nome NOVO"})
     client.patch(f"/admin/users/{env['a_id']}", headers=env["admin"], json={"full_name": "Nome Farm NOVO"})
-    new_kits = [("Fab NOVO", "LOTE-NOVO", "2028-01-01", "")] * 2
-    new_dsf = pdf_text(_dsf(client, env, _metadata(ids[:2], new_kits)).content)
+    client.put(f"{env['base']}/exams/{ids[1]}", headers=env["a"], json={
+        **EXAMS[1], "manufacturer": "Fab NOVO", "lot": "LOTE-NOVO", "expiry_date": "2028-01-01"})
+    new_dsf = pdf_text(_dsf(client, env).content)
     assert "Glicemia ALTERADA" in new_dsf and "Nome NOVO" in new_dsf and "LOTE-NOVO" in new_dsf
 
     reprint = client.get(f"{env['base']}/documents/{doc_id}", headers=env["b"])  # any pharmacist may reprint
@@ -299,7 +262,8 @@ def test_dsf_history_and_byte_identical_reprint_after_source_changes(client, env
     assert 'filename="declaracao-servico-farmaceutico-atendimento-' in reprint.headers["content-disposition"]
     old = pdf_text(reprint.content)
     assert "ALTERADA" not in old and "NOVO" not in old
-    assert "LOTE-ALFA-001" in old and "LOTE-GAMA-003" in old and "Colesterol total" in old
+    assert "LOTE-ALFA-001" in old and "LOTE-BETA-002" in old and "LOTE-GAMA-003" in old
+    assert "Colesterol total" in old
 
 
 def test_dsf_follows_the_pharmacist_establishment_change(client, env):
