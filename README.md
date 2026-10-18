@@ -9,6 +9,9 @@ Farmacêutico (DSF, built from the exam results recorded in the consultation, in
 lot and expiry date of the test/kit stored with each result; the last kit used for the same exam is suggested
 when it is entered again).
 
+Starting a new consultation for a patient closes the previous one: from then on its SOAP and exam
+results are read-only (enforced by the API); it can still be viewed and its documents reprinted.
+
 ## Architecture
 
 ```

@@ -133,6 +133,9 @@ class Consultation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+    # Set when the consultation is closed (a later consultation was started for the patient);
+    # a closed consultation's SOAP and exam results can no longer be changed. Never reopened.
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     pharmacist: Mapped[Pharmacist] = relationship()
     soap: Mapped["SoapRecord | None"] = relationship(

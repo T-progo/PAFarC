@@ -127,11 +127,11 @@ def test_soap_saves_and_reopens(client, headers_a, patient_id):
 
 def test_soap_update_does_not_affect_other_consultation(client, headers_a, patient_id):
     c1 = _new(client, headers_a, patient_id).json()["id"]
-    c2 = _new(client, headers_a, patient_id).json()["id"]
     client.put(_url(patient_id, c1, "/soap"), json=SOAP_A, headers=headers_a)
-    client.put(_url(patient_id, c2, "/soap"), json=SOAP_B, headers=headers_a)
     updated = {**SOAP_A, "plan": "Plano revisado."}
-    client.put(_url(patient_id, c1, "/soap"), json=updated, headers=headers_a)
+    client.put(_url(patient_id, c1, "/soap"), json=updated, headers=headers_a)  # while c1 is open
+    c2 = _new(client, headers_a, patient_id).json()["id"]
+    client.put(_url(patient_id, c2, "/soap"), json=SOAP_B, headers=headers_a)
 
     assert client.get(_url(patient_id, c1), headers=headers_a).json()["soap"] == updated
     assert client.get(_url(patient_id, c2), headers=headers_a).json()["soap"] == SOAP_B
@@ -154,11 +154,11 @@ def test_only_responsible_pharmacist_can_edit(client, headers_a, headers_b, pati
 
 def test_multiple_exam_results_belong_to_their_consultation(client, headers_a, patient_id):
     c1 = _new(client, headers_a, patient_id).json()["id"]
-    c2 = _new(client, headers_a, patient_id).json()["id"]
     for exam in EXAMS:
         response = client.post(_url(patient_id, c1, "/exams"), json=exam, headers=headers_a)
         assert response.status_code == 201
         assert response.json()["consultation_id"] == c1
+    c2 = _new(client, headers_a, patient_id).json()["id"]
     client.post(_url(patient_id, c2, "/exams"), json={"exam_name": "Ureia", "result": "38", "unit": "mg/dL"}, headers=headers_a)
 
     exams_1 = client.get(_url(patient_id, c1), headers=headers_a).json()["exam_results"]
@@ -189,8 +189,8 @@ def test_edit_and_delete_exam_result(client, headers_a, patient_id):
 
 def test_exam_from_other_consultation_cannot_be_edited(client, headers_a, patient_id):
     c1 = _new(client, headers_a, patient_id).json()["id"]
-    c2 = _new(client, headers_a, patient_id).json()["id"]
     exam_id = client.post(_url(patient_id, c1, "/exams"), json=EXAMS[0], headers=headers_a).json()["id"]
+    c2 = _new(client, headers_a, patient_id).json()["id"]  # open; the exam belongs to c1
     assert client.put(_url(patient_id, c2, f"/exams/{exam_id}"), json=EXAMS[1], headers=headers_a).status_code == 404
     assert client.delete(_url(patient_id, c2, f"/exams/{exam_id}"), headers=headers_a).status_code == 404
     assert client.get(_url(patient_id, c1), headers=headers_a).json()["exam_results"][0]["result"] == "15400"

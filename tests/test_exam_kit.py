@@ -164,7 +164,13 @@ def test_suggestion_authorization(client, env):
 def test_existing_exam_keeps_its_own_kit_after_newer_ones(client, env):
     old_base = env["new"]()
     old = _add(client, old_base, env["a"], **KIT_A)
-    _add(client, env["new"](), env["a"], manufacturer="Fabricante A", lot="LOTE-NEW", expiry_date="2030-01-01")
+    # a newer Glicemia kit recorded for another patient (so old_base stays open and editable)
+    other_pid = client.post("/patients", headers=env["a"], json={
+        "full_name": "Outro Paciente Kit", "date_of_birth": "1980-01-01", "cpf": "11144477735"}).json()["id"]
+    other_cid = client.post(f"/patients/{other_pid}/consultations", headers=env["a"], json={}).json()["id"]
+    _add(client, f"/patients/{other_pid}/consultations/{other_cid}", env["a"],
+         manufacturer="Fabricante A", lot="LOTE-NEW", expiry_date="2030-01-01")
+    assert _suggest(client, env["a"], "Glicemia").json()["lot"] == "LOTE-NEW"
     shown = client.get(old_base, headers=env["a"]).json()["exam_results"][0]
     assert (shown["lot"], shown["expiry_date"]) == ("LOTE-001", "2027-12-31")
     r = client.put(f"{old_base}/exams/{old['id']}", headers=env["a"], json={**{k: shown[k] for k in (

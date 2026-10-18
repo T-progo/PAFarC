@@ -53,6 +53,7 @@ def init_db() -> None:
 # Columns added after the first release. create_all() creates new tables but does not
 # alter existing ones, so these are added in place (no data is changed).
 _ADDED_COLUMNS = {
+    "consultations": {"closed_at": "DATETIME"},
     "generated_documents": {"pdf_encrypted": "BLOB", "pdf_size": "INTEGER"},
     "exam_results": {
         "manufacturer_encrypted": "TEXT",

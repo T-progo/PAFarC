@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_pharmacist, require_clinical
@@ -64,6 +64,56 @@ def _get_editable_consultation(
     return consultation
 
 
+def _get_mutable_consultation(
+    db: Session, patient_id: int, consultation_id: int, pharmacist: Pharmacist
+) -> Consultation:
+    """The single check for changing a consultation's clinical content (SOAP, exam results):
+    the responsible pharmacist, and only while the consultation is open."""
+    consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    if consultation.closed_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Atendimento encerrado. Os dados clínicos deste atendimento são somente para consulta.",
+        )
+    return consultation
+
+
+def _close_other_consultations(db: Session, patient_id: int, keep_id: int, when: datetime) -> None:
+    """Close the patient's other open consultations (status only; updated_at is left as is)."""
+    db.execute(
+        update(Consultation)
+        .where(Consultation.patient_id == patient_id, Consultation.id != keep_id, Consultation.closed_at.is_(None))
+        .values(closed_at=when, updated_at=Consultation.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def close_superseded_consultations(db: Session) -> int:
+    """Startup, idempotent: close every open consultation that is not its patient's most
+    recently started one (the state the rule above produces), dated when the next one was
+    started. Only the status is written; clinical content is untouched."""
+    latest = dict(db.execute(
+        select(Consultation.patient_id, func.max(Consultation.id)).group_by(Consultation.patient_id)
+    ).all())
+    open_ones = db.execute(
+        select(Consultation.id, Consultation.patient_id).where(Consultation.closed_at.is_(None))
+    ).all()
+    closed = 0
+    for consultation_id, patient_id in open_ones:
+        if consultation_id == latest[patient_id]:
+            continue
+        next_started = db.scalar(select(func.min(Consultation.created_at)).where(
+            Consultation.patient_id == patient_id, Consultation.id > consultation_id))
+        db.execute(
+            update(Consultation).where(Consultation.id == consultation_id)
+            .values(closed_at=next_started, updated_at=Consultation.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        closed += 1
+    db.commit()
+    return closed
+
+
 def _get_exam(consultation: Consultation, exam_id: int) -> ExamResult:
     for exam in consultation.exam_results:
         if exam.id == exam_id:
@@ -105,6 +155,9 @@ def create_consultation(
         patient_id=patient.id, pharmacist_id=pharmacist.id, consultation_date=consultation_date
     )
     db.add(consultation)
+    db.flush()
+    # Starting a new consultation ends the patient's previous one(s): they become read-only.
+    _close_other_consultations(db, patient.id, consultation.id, datetime.now(timezone.utc))
     db.commit()
     db.refresh(consultation)
     return consultation
@@ -164,7 +217,7 @@ def previous_exams(
 def save_soap(
     patient_id: int, consultation_id: int, data: SoapIn, db: DB, pharmacist: CurrentPharmacist
 ) -> SoapRecord:
-    consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    consultation = _get_mutable_consultation(db, patient_id, consultation_id, pharmacist)
     values = {k: v.strip() for k, v in data.model_dump().items()}
     if consultation.soap is None:
         consultation.soap = SoapRecord(**values)
@@ -182,7 +235,7 @@ def save_soap(
 def add_exam_result(
     patient_id: int, consultation_id: int, data: ExamResultIn, db: DB, pharmacist: CurrentPharmacist
 ) -> ExamResult:
-    consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    consultation = _get_mutable_consultation(db, patient_id, consultation_id, pharmacist)
     exam = ExamResult(**_clean_exam(data))
     consultation.exam_results.append(exam)
     _touch(consultation)
@@ -200,7 +253,7 @@ def update_exam_result(
     db: DB,
     pharmacist: CurrentPharmacist,
 ) -> ExamResult:
-    consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    consultation = _get_mutable_consultation(db, patient_id, consultation_id, pharmacist)
     exam = _get_exam(consultation, exam_id)
     for key, value in _clean_exam(data).items():
         setattr(exam, key, value)
@@ -213,7 +266,7 @@ def update_exam_result(
 def delete_exam_result(
     patient_id: int, consultation_id: int, exam_id: int, db: DB, pharmacist: CurrentPharmacist
 ) -> Response:
-    consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    consultation = _get_mutable_consultation(db, patient_id, consultation_id, pharmacist)
     consultation.exam_results.remove(_get_exam(consultation, exam_id))
     _touch(consultation)
     db.commit()

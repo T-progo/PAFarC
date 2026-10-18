@@ -24,6 +24,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         patients.backfill_name_tokens(db)  # partial-search tokens for older records
         auth.backfill_crf_uf(db)  # separate UF for accounts created before it existed
         establishments.migrate_legacy_establishment(db)  # one-time move to multiple establishments
+        consultations.close_superseded_consultations(db)  # only each patient's latest stays open
     yield
 
 

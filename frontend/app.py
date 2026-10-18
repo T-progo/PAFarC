@@ -583,9 +583,10 @@ def consultations_section(patient_id: int) -> None:
         for consultation in history:
             pharmacist = consultation["pharmacist"]
             left, right = st.columns([5, 1])
+            state = "Encerrado" if consultation["closed_at"] else "Em andamento"
             left.markdown(
                 f"**{format_date(consultation['consultation_date'])}** · "
-                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])}"
+                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])} · {state}"
             )
             right.button(
                 "Abrir",
@@ -627,7 +628,9 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
         show_api_error(exc)
         return
     pharmacist = consultation["pharmacist"]
-    editable = pharmacist["id"] == st.session_state["pharmacist"]["id"]
+    owner = pharmacist["id"] == st.session_state["pharmacist"]["id"]
+    closed = consultation["closed_at"] is not None
+    editable = owner and not closed  # SOAP and exam results (the API enforces the same rule)
 
     st.button("← Voltar ao paciente", key="back_consultation", on_click=leave_consultation)
     if flash := st.session_state.pop("flash", None):
@@ -646,7 +649,9 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
             field("Farmacêutico(a)", pharmacist["full_name"])
         with col3:
             field("CRF", pharmacist["crf"])
-    if not editable:
+    if closed:
+        st.info("Atendimento encerrado. Os dados clínicos deste atendimento são somente para consulta.")
+    elif not owner:
         st.info("Somente leitura: este atendimento foi registrado por outro farmacêutico.")
 
     def exams_after_objective() -> None:
@@ -654,7 +659,7 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
         previous_exams_section(patient_id, consultation["id"])
 
     soap_section(patient_id, consultation, editable, exams_after_objective)
-    documents_section(patient_id, patient, consultation, editable)
+    documents_section(patient_id, patient, consultation, owner)  # issuing documents is unchanged
 
 
 def soap_section(patient_id: int, consultation: dict, editable: bool, after_objective) -> None:
