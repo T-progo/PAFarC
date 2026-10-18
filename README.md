@@ -9,8 +9,9 @@ Farmacêutico (DSF, built from the exam results recorded in the consultation, in
 lot and expiry date of the test/kit stored with each result; the last kit used for the same exam is suggested
 when it is entered again).
 
-Starting a new consultation for a patient closes the previous one: from then on its SOAP and exam
-results are read-only (enforced by the API); it can still be viewed and its documents reprinted.
+A consultation is closed by “Finalizar atendimento” (after a confirmation) or, as a fallback, when a new
+consultation is started for the same patient: from then on its SOAP and exam results are read-only (enforced
+by the API); it can still be viewed and its documents reprinted. There is no reopening.
 
 ## Architecture
 
@@ -298,6 +299,7 @@ Tests use a temporary database and test-only keys; they never touch the real dat
 | GET | `/patients/{id}/consultations/{cid}` | Consultation with SOAP, exams and issued documents |
 | PUT | `/patients/{id}/consultations/{cid}/soap` | Save SOAP |
 | POST / PUT / DELETE | `/patients/{id}/consultations/{cid}/exams[/{eid}]` | Add / edit / delete exam result |
+| POST | `/patients/{id}/consultations/{cid}/finalize` | Finalizar atendimento (responsible pharmacist; irreversible) |
 | GET | `/patients/{id}/consultations/{cid}/previous-exams` | Exam results of earlier consultations (read-only) |
 | POST | `/exam-kit-suggestion` | Last Fabricante/Lote/Validade the pharmacist used for the same exam name |
 | POST | `/patients/{id}/consultations/{cid}/documents/{prescription,exam-request,referral,dsf}` | Generate PDF |

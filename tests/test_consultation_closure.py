@@ -228,3 +228,82 @@ def test_startup_closes_only_superseded_consultations_and_is_idempotent(client, 
     assert _snapshot(db) == before_clinical
     assert client.put(f"{c1}/soap", headers=env["a"], json=SOAP).status_code == 409
     assert client.put(f"{c3}/soap", headers=env["a"], json=SOAP).status_code == 200
+
+
+# --- explicit “Finalizar atendimento” ------------------------------------------------------------
+
+def _finalize(client, base, headers):
+    return client.post(f"{base}/finalize", headers=headers)
+
+
+def test_owner_finalizes_open_consultation_without_changing_clinical_data(client, env, db):
+    c1, _ = _filled(client, env)
+    before = _snapshot(db)
+    r = _finalize(client, c1, env["a"])
+    assert r.status_code == 200 and r.json()["closed_at"] is not None
+    assert client.get(c1, headers=env["a"]).json()["closed_at"] == r.json()["closed_at"]
+    assert _snapshot(db) == before
+    body = client.get(c1, headers=env["a"]).json()
+    assert body["soap"] == SOAP and body["exam_results"][0]["lot"] == "LOTE-001"
+
+
+def test_partially_filled_consultation_can_be_finalized(client, env):
+    empty = _new(client, env)  # no SOAP, no exams: no extra validation rule
+    assert _finalize(client, empty, env["a"]).status_code == 200
+
+
+def test_finalize_authorization(client, env):
+    c1, _ = _filled(client, env)
+    assert _finalize(client, c1, env["b"]).status_code == 403  # not the responsible pharmacist
+    assert _finalize(client, c1, env["admin"]).status_code == 403
+    assert _finalize(client, c1, {}).status_code == 401
+    assert client.get(c1, headers=env["a"]).json()["closed_at"] is None  # still open
+
+
+def test_finalizing_again_keeps_the_original_closed_at(client, env):
+    c1, _ = _filled(client, env)
+    first = _finalize(client, c1, env["a"]).json()["closed_at"]
+    r = _finalize(client, c1, env["a"])
+    assert r.status_code == 409 and r.json()["detail"] == CLOSED_DETAIL
+    assert client.get(c1, headers=env["a"]).json()["closed_at"] == first
+    # automatically closed consultations keep their timestamp too
+    c2 = _new(client, env)
+    c3 = _new(client, env)
+    auto = client.get(c2, headers=env["a"]).json()["closed_at"]
+    assert _finalize(client, c2, env["a"]).status_code == 409
+    assert client.get(c2, headers=env["a"]).json()["closed_at"] == auto
+    assert client.get(c3, headers=env["a"]).json()["closed_at"] is None
+
+
+@pytest.mark.parametrize("field", ["subjective", "objective", "assessment", "plan"])
+def test_soap_is_read_only_after_finalization(client, env, db, field):
+    c1, _ = _filled(client, env)
+    _finalize(client, c1, env["a"])
+    before = _snapshot(db)
+    r = client.put(f"{c1}/soap", headers=env["a"], json={**SOAP, field: "ALTERADO"})
+    assert r.status_code == 409 and r.json()["detail"] == CLOSED_DETAIL
+    assert _snapshot(db) == before
+
+
+def test_exams_and_kit_are_read_only_after_finalization(client, env, db):
+    c1, exam = _filled(client, env)
+    _finalize(client, c1, env["a"])
+    before = _snapshot(db)
+    assert client.post(f"{c1}/exams", headers=env["a"], json=EXAM).status_code == 409
+    assert client.put(f"{c1}/exams/{exam['id']}", headers=env["a"], json={**EXAM, "result": "1"}).status_code == 409
+    for change in ({"manufacturer": "X"}, {"lot": "X"}, {"expiry_date": "2030-01-01"}):
+        assert client.put(f"{c1}/exams/{exam['id']}", headers=env["a"], json={**EXAM, **change}).status_code == 409
+    assert client.delete(f"{c1}/exams/{exam['id']}", headers=env["a"]).status_code == 409
+    assert _snapshot(db) == before
+
+
+def test_after_finalization_documents_suggestions_and_new_consultation_still_work(client, env):
+    c1, _ = _filled(client, env)
+    issued = client.post(f"{c1}/documents/prescription", headers=env["a"], json={"items": [{"medication": "Item"}]})
+    doc_id = client.get(c1, headers=env["a"]).json()["documents"][0]["id"]
+    _finalize(client, c1, env["a"])
+    assert client.get(f"{c1}/documents/{doc_id}", headers=env["a"]).content == issued.content
+    assert client.post(f"{c1}/documents/dsf", headers=env["a"], json={}).status_code == 200
+    assert client.post("/exam-kit-suggestion", headers=env["a"], json={"exam_name": "Glicemia"}).json()["lot"] == "LOTE-001"
+    c2 = _new(client, env)  # the patient can start a new consultation; it is open and editable
+    assert client.put(f"{c2}/soap", headers=env["a"], json=SOAP).status_code == 200

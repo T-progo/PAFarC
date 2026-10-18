@@ -659,7 +659,45 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
         previous_exams_section(patient_id, consultation["id"])
 
     soap_section(patient_id, consultation, editable, exams_after_objective)
+    if editable:
+        finalize_section(patient_id, consultation["id"])
     documents_section(patient_id, patient, consultation, owner)  # issuing documents is unchanged
+
+
+FINALIZE_WARNING = ("Após finalizar o atendimento, os dados clínicos não poderão mais ser alterados "
+                    "ou excluídos. Deseja continuar?")
+
+
+def finalize_section(patient_id: int, cid: int) -> None:
+    """“Finalizar atendimento”: closes this consultation for good, after an explicit confirmation."""
+    confirm_key = f"finalize_confirm_{cid}"
+    with st.container(border=True):
+        st.subheader("Finalizar atendimento")
+        st.caption("“Salvar SOAP” e “Adicionar exame” apenas salvam o progresso; o atendimento "
+                   "continua em andamento até ser finalizado.")
+        if not st.session_state.get(confirm_key):
+            if st.button("Finalizar atendimento", key=f"finalize_{cid}"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+            return
+        st.warning(FINALIZE_WARNING)
+        unsaved = soap_has_unsaved_changes()
+        if unsaved:
+            st.error("Há alterações não salvas no SOAP. Salve o SOAP antes de finalizar o atendimento.")
+        confirm_col, cancel_col, _ = st.columns([2, 1, 3])
+        if confirm_col.button("Sim, finalizar atendimento", type="primary", key=f"finalize_yes_{cid}",
+                              disabled=unsaved):
+            try:
+                api().finalize_consultation(patient_id, cid)
+            except ApiError as exc:
+                show_api_error(exc)
+                return
+            st.session_state.pop(confirm_key, None)
+            st.session_state["flash"] = "Atendimento finalizado."
+            st.rerun()
+        if cancel_col.button("Cancelar", key=f"finalize_no_{cid}"):
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
 
 
 def soap_section(patient_id: int, consultation: dict, editable: bool, after_objective) -> None:

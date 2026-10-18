@@ -185,6 +185,24 @@ def get_consultation(
     return _get_consultation(db, patient_id, consultation_id)
 
 
+@router.post("/{consultation_id}/finalize", response_model=ConsultationOut)
+def finalize_consultation(
+    patient_id: int, consultation_id: int, db: DB, pharmacist: CurrentPharmacist
+) -> Consultation:
+    """“Finalizar atendimento”: the responsible pharmacist closes the open consultation. Only
+    closed_at is set (same state as the automatic closing); an already closed consultation
+    gets 409 and keeps its original closed_at. There is no way back."""
+    consultation = _get_mutable_consultation(db, patient_id, consultation_id, pharmacist)
+    db.execute(
+        update(Consultation).where(Consultation.id == consultation.id, Consultation.closed_at.is_(None))
+        .values(closed_at=datetime.now(timezone.utc), updated_at=Consultation.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    db.refresh(consultation)
+    return consultation
+
+
 @router.get("/{consultation_id}/previous-exams", response_model=list[PreviousExamGroup])
 def previous_exams(
     patient_id: int, consultation_id: int, db: DB, _pharmacist: CurrentPharmacist

@@ -115,6 +115,9 @@ class PharmaTechAPI:
         path = f"/patients/{patient_id}/consultations/{consultation_id}/exams/{exam_id}"
         return self._request("PUT", path, json=exam)
 
+    def finalize_consultation(self, patient_id: int, consultation_id: int) -> dict:
+        return self._request("POST", f"/patients/{patient_id}/consultations/{consultation_id}/finalize")
+
     def exam_kit_suggestion(self, exam_name: str) -> dict:
         """Last Fabricante/Lote/Validade this pharmacist used for the same exam (may be empty)."""
         return self._request("POST", "/exam-kit-suggestion", json={"exam_name": exam_name})
