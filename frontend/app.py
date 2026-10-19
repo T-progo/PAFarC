@@ -13,7 +13,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_client import ApiError, PharmaTechAPI  # noqa: E402
-from exam_kit import EMPTY_KIT, kit_from_api, merge_kit_suggestion  # noqa: E402
+from exam_kit import EMPTY_KIT, EXAM_FORM_FIELDS, exam_form_has_input, kit_from_api, merge_kit_suggestion  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PHARMATECH_LOGO = ROOT / "IMG_1485.jpeg"
@@ -668,6 +668,20 @@ FINALIZE_WARNING = ("Após finalizar o atendimento, os dados clínicos não pode
                     "ou excluídos. Deseja continuar?")
 
 
+def unsaved_clinical_work(cid: int) -> list[str]:
+    """What would be lost by finalizing now. An exam edit form's typed values only reach the app
+    when it is submitted, so an open edit form counts as pending until saved or cancelled."""
+    gen = exam_widgets_generation(cid)
+    pending = []
+    if soap_has_unsaved_changes():
+        pending.append("SOAP não salvo")
+    if exam_form_has_input({f: st.session_state.get(f"exam_new_{cid}_{gen}_{f}") for f in EXAM_FORM_FIELDS}):
+        pending.append("Exame ainda não adicionado (use “Adicionar exame” ou apague os campos)")
+    if st.session_state.get(f"exam_select_{cid}_{gen}") is not None:
+        pending.append("Edição de exame em andamento (use “Salvar alterações” ou “Cancelar edição”)")
+    return pending
+
+
 def finalize_section(patient_id: int, cid: int) -> None:
     """“Finalizar atendimento”: closes this consultation for good, after an explicit confirmation."""
     confirm_key = f"finalize_confirm_{cid}"
@@ -681,12 +695,13 @@ def finalize_section(patient_id: int, cid: int) -> None:
                 st.rerun()
             return
         st.warning(FINALIZE_WARNING)
-        unsaved = soap_has_unsaved_changes()
-        if unsaved:
-            st.error("Há alterações não salvas no SOAP. Salve o SOAP antes de finalizar o atendimento.")
+        pending = unsaved_clinical_work(cid)
+        if pending:
+            st.error("Existem alterações ainda não salvas. Salve ou cancele as alterações antes de finalizar "
+                     "o atendimento.\n\n" + "\n".join(f"- {item}" for item in pending))
         confirm_col, cancel_col, _ = st.columns([2, 1, 3])
         if confirm_col.button("Sim, finalizar atendimento", type="primary", key=f"finalize_yes_{cid}",
-                              disabled=unsaved):
+                              disabled=bool(pending)):
             try:
                 api().finalize_consultation(patient_id, cid)
             except ApiError as exc:
@@ -872,11 +887,21 @@ def exam_inputs(prefix: str, exam: dict, adding: bool = False) -> dict:
     return values
 
 
+def cancel_exam_edit(cid: int, exam_id: int, gen: int) -> None:
+    """Close the edit form without saving: the next time this exam is opened it shows its saved
+    values. The add-exam form is left untouched."""
+    st.session_state[f"exam_select_{cid}_{gen}"] = None
+    for key in [k for k in st.session_state if str(k).startswith(f"exam_edit_{exam_id}_{gen}_")]:
+        del st.session_state[key]
+    st.session_state.pop(f"exam_delete_confirm_{exam_id}_{gen}", None)
+
+
 def edit_exam_form(patient_id: int, cid: int, exam: dict, gen: int) -> None:
     with st.form(f"exam_edit_{cid}_{exam['id']}_{gen}"):
         values = exam_inputs(f"exam_edit_{exam['id']}_{gen}", exam)
-        save_col, delete_col, confirm_col = st.columns([1, 1, 2])
+        save_col, cancel_col, delete_col, confirm_col = st.columns([1, 1, 1, 2])
         save = save_col.form_submit_button("Salvar alterações", type="primary")
+        cancel_col.form_submit_button("Cancelar edição", on_click=cancel_exam_edit, args=(cid, exam["id"], gen))
         delete = delete_col.form_submit_button("Excluir exame")
         confirmed = confirm_col.checkbox("Confirmar exclusão", key=f"exam_delete_confirm_{exam['id']}_{gen}")
     if save:

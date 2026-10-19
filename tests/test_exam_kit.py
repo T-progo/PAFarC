@@ -12,7 +12,7 @@ from backend.auth import create_pharmacist
 from backend.models import ROLE_ADMINISTRATOR, ExamResult
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "frontend"))
-from exam_kit import EMPTY_KIT, kit_from_api, merge_kit_suggestion  # noqa: E402
+from exam_kit import EMPTY_KIT, exam_form_has_input, kit_from_api, merge_kit_suggestion  # noqa: E402
 
 PASSWORD = "senha-segura-1"
 KIT_A = {"manufacturer": "Fabricante A", "lot": "LOTE-001", "expiry_date": "2027-12-31"}
@@ -203,3 +203,17 @@ def test_merge_fills_empty_fields_and_replaces_only_untouched_suggestions():
     # a name without history clears untouched suggested values but keeps typed ones
     assert merge_kit_suggestion(typed, first, kit_from_api({})) == {"manufacturer": "", "lot": "LOTE-002",
                                                                      "expiry": None}
+
+
+# --- finalization guard: unsaved input in the add-exam form ----------------------------------
+
+def test_exam_form_has_input_detects_any_typed_or_suggested_value():
+    empty = {"name": "", "result": "", "unit": "", "reference": "", "notes": "", "manufacturer": "", "lot": "",
+             "expiry": None}
+    assert not exam_form_has_input(empty)
+    assert not exam_form_has_input({})  # form not rendered yet
+    assert not exam_form_has_input({**empty, "name": "   "})  # whitespace only
+    for field, value in (("name", "Glicemia"), ("result", "98"), ("unit", "mg/dL"), ("reference", "70 - 99"),
+                         ("notes", "Jejum"), ("manufacturer", "Fab A"), ("lot", "L1"), ("expiry", date(2027, 1, 1))):
+        assert exam_form_has_input({**empty, field: value}), field
+

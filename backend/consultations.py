@@ -64,11 +64,26 @@ def _get_editable_consultation(
     return consultation
 
 
+def _begin_write(db: Session) -> None:
+    """Start this request's write transaction now, taking SQLite's write lock (BEGIN IMMEDIATE)
+    before any state is checked. Every clinical change (SOAP, exam results) and every closing
+    (finalize, new consultation) goes through here, so they run one at a time: each sees what
+    the previous one committed, and the lock is held until this request commits or rolls back.
+    A waiting request blocks for up to the driver's busy timeout (pysqlite: 5 s)."""
+    if db.get_bind().dialect.name == "sqlite":
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def _get_mutable_consultation(
     db: Session, patient_id: int, consultation_id: int, pharmacist: Pharmacist
 ) -> Consultation:
-    """The single check for changing a consultation's clinical content (SOAP, exam results):
-    the responsible pharmacist, and only while the consultation is open."""
+    """The single check for changing a consultation's clinical content (SOAP, exam results) or
+    closing it: the responsible pharmacist, and only while the consultation is open. Access
+    (404/403) is checked first; the open/closed state is then re-checked under the write lock,
+    in the same transaction as the change, so a closing committed by another request is seen."""
+    _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
+    _begin_write(db)
+    db.expire_all()  # re-read everything under the lock
     consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
     if consultation.closed_at is not None:
         raise HTTPException(
@@ -154,6 +169,7 @@ def create_consultation(
     consultation = Consultation(
         patient_id=patient.id, pharmacist_id=pharmacist.id, consultation_date=consultation_date
     )
+    _begin_write(db)  # closing the previous one and creating this one commit together, serialized
     db.add(consultation)
     db.flush()
     # Starting a new consultation ends the patient's previous one(s): they become read-only.
@@ -193,11 +209,16 @@ def finalize_consultation(
     closed_at is set (same state as the automatic closing); an already closed consultation
     gets 409 and keeps its original closed_at. There is no way back."""
     consultation = _get_mutable_consultation(db, patient_id, consultation_id, pharmacist)
-    db.execute(
+    closed = db.execute(
         update(Consultation).where(Consultation.id == consultation.id, Consultation.closed_at.is_(None))
         .values(closed_at=datetime.now(timezone.utc), updated_at=Consultation.updated_at)
         .execution_options(synchronize_session=False)
-    )
+    ).rowcount
+    if closed != 1:  # only the request that performs the open -> closed transition succeeds
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Atendimento encerrado. Os dados clínicos deste atendimento são somente para consulta.",
+        )
     db.commit()
     db.refresh(consultation)
     return consultation

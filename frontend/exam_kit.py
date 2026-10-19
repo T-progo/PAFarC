@@ -15,6 +15,14 @@ def kit_from_api(kit: dict) -> dict:
     }
 
 
+EXAM_FORM_FIELDS = ("name", "result", "unit", "reference", "notes", "manufacturer", "lot", "expiry")
+
+
+def exam_form_has_input(values: dict) -> bool:
+    """True when the add-exam form holds anything not yet added (typed or suggested values)."""
+    return any(values.get(field) not in (None, "") and str(values.get(field)).strip() for field in EXAM_FORM_FIELDS)
+
+
 def merge_kit_suggestion(current: dict, previous: dict, new: dict) -> dict:
     """Form values after a new suggestion: a field takes it only while it is empty or still
     holds the previous suggestion, so values the pharmacist typed are never overwritten."""
