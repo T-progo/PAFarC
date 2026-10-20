@@ -16,7 +16,7 @@ import api_client  # noqa: E402  (the same module app.py imports)
 
 CONFIRM = ("Deseja cancelar este lançamento? O registro será mantido no histórico como Cancelado e não poderá mais "
            "ser alterado.")
-UNSAVED = "Existem alterações ainda não salvas. Salve ou cancele as alterações antes de cancelar o lançamento."
+UNSAVED = "Existem alterações ainda não salvas. Salve as alterações antes de cancelar o lançamento."
 NOTICE = ("Registro cancelado. Este lançamento foi preservado no histórico para rastreabilidade e não pode mais ser "
           "alterado.")
 EDIT_BUTTONS = {"Salvar rascunho", "Finalizar registro", "Cancelar lançamento"}

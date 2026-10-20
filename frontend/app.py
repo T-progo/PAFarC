@@ -1169,8 +1169,7 @@ QC_FINALIZE_WARNING = ("Após finalizar, o registro e o PDF não poderão mais s
                        "Deseja continuar?")
 QC_CANCEL_WARNING = ("Deseja cancelar este lançamento? O registro será mantido no histórico como Cancelado e não "
                      "poderá mais ser alterado.")
-QC_CANCEL_UNSAVED = ("Existem alterações ainda não salvas. Salve ou cancele as alterações antes de cancelar o "
-                     "lançamento.")
+QC_CANCEL_UNSAVED = "Existem alterações ainda não salvas. Salve as alterações antes de cancelar o lançamento."
 QC_CANCELLED_NOTICE = ("Registro cancelado. Este lançamento foi preservado no histórico para rastreabilidade e não "
                        "pode mais ser alterado.")
 
