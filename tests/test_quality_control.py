@@ -308,3 +308,82 @@ def test_quality_control_does_not_touch_clinical_documents(client, env):
     _finalize(client, env["a1"], record["id"])
     assert client.get(f"{base}/documents/{doc_id}", headers=env["a1"]).content == issued
     assert len(client.get(base, headers=env["a1"]).json()["documents"]) == 1  # QC PDFs are not patient documents
+
+
+# --- "Cancelar lançamento" (discard a draft) -------------------------------------------------
+
+def _qc_rows():
+    with get_engine().connect() as conn:
+        return {r[0]: r for r in conn.execute(text("SELECT * FROM quality_controls ORDER BY id")).fetchall()}
+
+
+def _cancel(client, h, rid):
+    return client.post(f"/quality-controls/{rid}/cancel", headers=h)
+
+
+def test_cancel_discards_the_draft_and_leaves_everything_else_untouched(client, env):
+    finalized = _create(client, env["a1"])
+    assert _finalize(client, env["a1"], finalized["id"]).status_code == 200
+    other_draft = _create(client, env["a1"], REJECTED)
+    colleague_draft = _create(client, env["a2"])
+    target = _create(client, env["a1"], {**REJECTED, **NC})  # filled in, incl. the non-conformity part
+    rows_before, app_before = _qc_rows(), _app_schema_and_rows()
+
+    r = _cancel(client, env["a1"], target["id"])
+    assert r.status_code == 204 and r.content == b""
+    rows_after = _qc_rows()
+    assert target["id"] not in rows_after  # the row (all its data) is gone; nothing else references it
+    assert rows_after == {k: v for k, v in rows_before.items() if k != target["id"]}  # others byte-identical
+    assert _app_schema_and_rows() == app_before  # no other table touched
+    assert client.get(f"/quality-controls/{target['id']}", headers=env["a1"]).status_code == 404
+    history = [x["id"] for x in client.get("/quality-controls", headers=env["a1"]).json()]
+    assert target["id"] not in history
+    assert set(history) == {finalized["id"], other_draft["id"], colleague_draft["id"]}
+    assert client.get(f"/quality-controls/{finalized['id']}/pdf", headers=env["a1"]).content.startswith(b"%PDF-")
+    with get_engine().connect() as conn:
+        assert conn.execute(text("PRAGMA foreign_key_check")).fetchall() == []
+
+
+def test_finalized_record_cannot_be_cancelled(client, env):
+    rid = _create(client, env["a1"])["id"]
+    assert _finalize(client, env["a1"], rid).status_code == 200
+    rows = _qc_rows()
+    pdf = client.get(f"/quality-controls/{rid}/pdf", headers=env["a1"]).content
+    r = _cancel(client, env["a1"], rid)
+    assert r.status_code == 409 and r.json()["detail"] == FINALIZED
+    assert _qc_rows() == rows
+    assert client.get(f"/quality-controls/{rid}/pdf", headers=env["a1"]).content == pdf
+    assert client.delete(f"/quality-controls/{rid}", headers=env["a1"]).status_code == 405  # still no delete route
+
+
+def test_cancel_permissions(client, env):
+    rid = _create(client, env["a1"])["id"]
+    rows = _qc_rows()
+    assert _cancel(client, env["a2"], rid).status_code == 403  # colleague: not the creator
+    assert _cancel(client, env["b1"], rid).status_code == 404  # another establishment: hidden
+    assert _cancel(client, env["admin"], rid).status_code == 403  # administrator: no clinical access
+    assert client.post(f"/quality-controls/{rid}/cancel").status_code == 401
+    assert _cancel(client, env["a1"], 999999).status_code == 404
+    assert _qc_rows() == rows
+    # a creator moved to another establishment can no longer cancel it either
+    client.patch(f"/admin/users/{env['ids']['a1@qc.test']}", headers=env["admin"], json={"establishment_id": env["est_b"]["id"]})
+    assert _cancel(client, env["a1"], rid).status_code == 404
+    assert _qc_rows() == rows
+
+
+def test_repeated_cancel_is_a_clean_404(client, env):
+    rid = _create(client, env["a1"])["id"]
+    assert _cancel(client, env["a1"], rid).status_code == 204
+    second = _cancel(client, env["a1"], rid)
+    assert second.status_code == 404 and second.json()["detail"] == "Registro de controle de qualidade não encontrado."
+    assert client.put(f"/quality-controls/{rid}", headers=env["a1"], json=BASE).status_code == 404
+    assert _finalize(client, env["a1"], rid).status_code == 404
+
+
+def test_normal_flow_after_a_cancel(client, env):
+    assert _cancel(client, env["a1"], _create(client, env["a1"])["id"]).status_code == 204
+    record = _create(client, env["a1"])
+    r = _finalize(client, env["a1"], record["id"])
+    assert r.status_code == 200 and r.json()["finalized_at"]
+    assert "Valor encontrado: 98,5" in pdf_text(client.get(f"/quality-controls/{record['id']}/pdf", headers=env["a1"]).content)
+    assert [x["id"] for x in client.get("/quality-controls", headers=env["a1"]).json()] == [record["id"]]

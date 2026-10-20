@@ -183,3 +183,75 @@ def test_concurrent_stress_no_write_after_finalization(env):
         assert env["c1"].get(f"/quality-controls/{rid}", headers=env["h"]).json()["finalized_at"]
     assert late_writes() == []
     assert set(codes) <= {200, 409}, set(codes)
+
+
+# --- "Cancelar lançamento" against finalization / editing / a second cancel --------------------
+
+cancel = lambda env, c, rid: c.post(f"/quality-controls/{rid}/cancel", headers=env["h"])
+
+
+def row_count(rid):
+    with get_engine().connect() as conn:
+        return conn.execute(text("SELECT count(*) FROM quality_controls WHERE id = :i"), {"i": rid}).scalar()
+
+
+@pytest.mark.parametrize("mode", ["before", "after"])
+@pytest.mark.parametrize("slow_is", ["cancel", "finalize"])
+def test_cancel_vs_finalize_exactly_one_wins(env, monkeypatch, mode, slow_is):
+    rid = create(env, REJECTED)
+    do_cancel, do_finalize = lambda: cancel(env, env["c1"], rid), lambda: finalize(env, env["c2"], rid)
+    slow, fast = interleave(monkeypatch, mode, *((do_cancel, do_finalize) if slow_is == "cancel" else (do_finalize, do_cancel)))
+    cancel_r, finalize_r = (slow, fast) if slow_is == "cancel" else (fast, slow)
+    # "before": the fast request takes the lock first; "after": the slow one already holds it
+    cancel_won = (slow_is == "cancel") == (mode == "after")
+    if cancel_won:
+        assert cancel_r.status_code == 204 and finalize_r.status_code == 404
+        assert row_count(rid) == 0
+    else:
+        assert finalize_r.status_code == 200 and cancel_r.status_code == 409
+        assert row_count(rid) == 1
+        record = env["c1"].get(f"/quality-controls/{rid}", headers=env["h"]).json()
+        assert record["finalized_at"] == finalize_r.json()["finalized_at"]
+        assert env["c1"].get(f"/quality-controls/{rid}/pdf", headers=env["h"]).content.startswith(b"%PDF-")
+    assert late_writes() == []
+
+
+@pytest.mark.parametrize("mode", ["before", "after"])
+def test_cancel_vs_cancel(env, monkeypatch, mode):
+    rid = create(env, BASE)
+    slow, fast = interleave(monkeypatch, mode, lambda: cancel(env, env["c1"], rid), lambda: cancel(env, env["c2"], rid))
+    assert sorted([slow.status_code, fast.status_code]) == [204, 404]
+    assert row_count(rid) == 0
+
+
+def test_cancel_holding_the_lock_then_edit_finds_nothing(env, monkeypatch):
+    rid = create(env, BASE)
+    slow, fast = interleave(monkeypatch, "after", lambda: cancel(env, env["c1"], rid),
+                            lambda: env["c2"].put(f"/quality-controls/{rid}", headers=env["h"], json={**BASE, "value_found": "1"}))
+    assert slow.status_code == 204 and fast.status_code == 404
+    assert row_count(rid) == 0
+
+
+def test_concurrent_stress_cancel_and_finalize(env):
+    codes = []
+    for _ in range(10):
+        rid = create(env, BASE)
+        barrier = threading.Barrier(4)
+
+        def run(fn):
+            barrier.wait()
+            codes.append(fn().status_code)
+
+        threads = [threading.Thread(target=run, args=(f,)) for f in (
+            lambda: cancel(env, env["c1"], rid), lambda: cancel(env, env["c2"], rid),
+            lambda: finalize(env, env["c1"], rid), lambda: finalize(env, env["c2"], rid))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        record = env["c1"].get(f"/quality-controls/{rid}", headers=env["h"])
+        # either gone, or finalized with its PDF: never a half state
+        assert record.status_code == 404 or (record.json()["finalized_at"] and
+                                             env["c1"].get(f"/quality-controls/{rid}/pdf", headers=env["h"]).status_code == 200)
+    assert set(codes) <= {200, 204, 404, 409}, set(codes)
+    assert late_writes() == []

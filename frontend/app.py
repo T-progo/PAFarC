@@ -44,6 +44,9 @@ st.markdown(
     .pt-muted { color: #BBAE9E; }
     /* Dark text on the champagne primary buttons (white-on-silver was unreadable). */
     button[kind^="primary"], button[kind^="primary"] p { color: #2B2622 !important; font-weight: 600; }
+    /* "Cancelar lançamento": secondary button with a muted danger outline. */
+    .st-key-qc_cancel_actions button, .st-key-qc_cancel_confirm_actions button { border-color: #9E4A3A; }
+    .st-key-qc_cancel_actions button p, .st-key-qc_cancel_confirm_actions button p { color: #E39A88; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1164,6 +1167,7 @@ QC_NC_TEXT = ("nc_root_cause_other", "nc_corrective_action", "nc_repeat_value")
 QC_CHOICES = ("evaluation_status", "nc_root_cause", "nc_repeat_status", "nc_patient_decision")
 QC_FINALIZE_WARNING = ("Após finalizar, o registro e o PDF não poderão mais ser alterados ou excluídos. "
                        "Deseja continuar?")
+QC_CANCEL_WARNING = "Deseja cancelar este lançamento? Os dados preenchidos neste registro serão descartados."
 
 
 def qc_datetime(iso: str | None) -> str:
@@ -1381,17 +1385,53 @@ def qc_editor(record: dict) -> None:
                      key=k("nc_patient_decision"))
     current = qc_widget_values(rid, saved)
     dirty = qc_is_dirty(current, saved)
-    save_col, state_col = st.columns([1, 4])
-    if save_col.button("Salvar rascunho", type="primary", key=k("save")):
-        try:
-            api().update_quality_control(rid, current)
-        except ApiError as exc:
-            show_api_error(exc)
-        else:
-            st.session_state["flash"] = "Rascunho salvo."
-            st.rerun()
-    state_col.markdown(":orange[● Alterações não salvas]" if dirty else ":gray[✓ Rascunho salvo]")
+    # A row sized to the buttons' labels (wraps on narrow screens instead of truncating them).
+    with st.container(horizontal=True, vertical_alignment="center"):
+        if st.button("Salvar rascunho", type="primary", key=k("save")):
+            try:
+                api().update_quality_control(rid, current)
+            except ApiError as exc:
+                show_api_error(exc)
+            else:
+                st.session_state["flash"] = "Rascunho salvo."
+                st.rerun()
+        with st.container(key="qc_cancel_actions", width="content"):
+            if st.button("Cancelar lançamento", key=f"qc_cancel_{rid}"):
+                st.session_state[f"qc_cancel_confirm_{rid}"] = True
+                st.rerun()
+        st.markdown(":orange[● Alterações não salvas]" if dirty else ":gray[✓ Rascunho salvo]")
+    qc_cancel_confirmation(rid)
     qc_finalize_section(rid, dirty)
+
+
+def qc_cancel_confirmation(rid: int) -> None:
+    """“Cancelar lançamento”: after confirmation the draft is discarded (deleted by the API, which
+    refuses it once the record is finalized) and the user returns to the QC screen."""
+    confirm_key = f"qc_cancel_confirm_{rid}"
+    if not st.session_state.get(confirm_key):
+        return
+    with st.container(border=True):
+        st.warning(QC_CANCEL_WARNING)
+        with st.container(horizontal=True):
+            if st.button("Voltar", key=f"qc_cancel_no_{rid}"):
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
+            with st.container(key="qc_cancel_confirm_actions", width="content"):
+                confirmed = st.button("Sim, cancelar lançamento", key=f"qc_cancel_yes_{rid}")
+        if confirmed:
+            try:
+                api().cancel_quality_control(rid)
+            except ApiError as exc:
+                st.session_state.pop(confirm_key, None)
+                show_api_error(exc)
+                return
+            for key in [key for key in st.session_state if key.startswith(f"qc_{rid}_")]:
+                del st.session_state[key]
+            st.session_state.pop(confirm_key, None)
+            st.session_state.pop(f"qc_finalize_confirm_{rid}", None)
+            close_quality_control()
+            st.session_state["flash"] = "Lançamento cancelado."
+            st.rerun()
 
 
 def qc_finalize_section(rid: int, dirty: bool) -> None:

@@ -2,10 +2,10 @@
 
 A record belongs to the establishment where it was created and is visible only to pharmacists
 currently linked to that establishment (records of another establishment answer 404). Only its
-creator can change a draft. Finalizing validates it (a rejected control needs the non-conformity /
-corrective action), builds the PDF from the stored data and stores it, all in the same locked
-transaction as the change to finalized; afterwards the record is read-only and the PDF is always
-returned exactly as issued. No result is calculated or interpreted.
+creator can change a draft or cancel it (which deletes it). Finalizing validates it (a rejected
+control needs the non-conformity / corrective action), builds the PDF from the stored data and
+stores it, all in the same locked transaction as the change to finalized; afterwards the record is
+read-only and the PDF is always returned exactly as issued. No result is calculated or interpreted.
 """
 
 import re
@@ -262,6 +262,18 @@ def finalize_quality_control(record_id: int, db: DB, pharmacist: CurrentPharmaci
     db.commit()
     db.refresh(record)
     return record
+
+
+@router.post("/{record_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_quality_control(record_id: int, db: DB, pharmacist: CurrentPharmacist) -> Response:
+    """Discard a draft its creator gave up on ("Cancelar lançamento"). A draft is a single row
+    (nothing references it and it has no PDF), so it is deleted, under the same write lock as
+    finalization: a finalized record answers 409 and is never deleted; a draft already cancelled
+    answers 404."""
+    record = _get_mutable(db, record_id, pharmacist)
+    db.delete(record)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{record_id}/pdf", response_class=Response)
