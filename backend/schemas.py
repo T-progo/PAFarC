@@ -256,6 +256,7 @@ class QualityControlSummary(BaseModel):
     responsible_name: str
     responsible_crf: str
     finalized_at: datetime | None
+    cancelled_at: datetime | None
 
 
 class QualityControlOut(QualityControlSummary):
@@ -277,5 +278,6 @@ class QualityControlOut(QualityControlSummary):
     nc_repeat_value: str | None
     nc_repeat_status: str | None
     nc_patient_decision: str | None
+    cancelled_by_pharmacist_id: int | None
     created_at: datetime
     updated_at: datetime

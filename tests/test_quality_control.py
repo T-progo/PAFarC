@@ -2,6 +2,7 @@
 non-conformity for rejected controls, one immutable PDF. Fictitious data only."""
 import hashlib
 import io
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -310,38 +311,68 @@ def test_quality_control_does_not_touch_clinical_documents(client, env):
     assert len(client.get(base, headers=env["a1"]).json()["documents"]) == 1  # QC PDFs are not patient documents
 
 
-# --- "Cancelar lançamento" (discard a draft) -------------------------------------------------
+# --- "Cancelar lançamento": the draft is kept, read-only, as Cancelado ------------------------
+
+NEW_COLUMNS = ("cancelled_at", "cancelled_by_pharmacist_id")
+CANCELLED = ("Registro cancelado. Este lançamento foi preservado no histórico para rastreabilidade e não pode mais "
+             "ser alterado.")
+
 
 def _qc_rows():
     with get_engine().connect() as conn:
-        return {r[0]: r for r in conn.execute(text("SELECT * FROM quality_controls ORDER BY id")).fetchall()}
+        return {r["id"]: dict(r) for r in conn.execute(text("SELECT * FROM quality_controls ORDER BY id")).mappings()}
 
 
-def _cancel(client, h, rid):
-    return client.post(f"/quality-controls/{rid}/cancel", headers=h)
+def _cancel(client, h, rid, **kwargs):
+    return client.post(f"/quality-controls/{rid}/cancel", headers=h, **kwargs)
 
 
-def test_cancel_discards_the_draft_and_leaves_everything_else_untouched(client, env):
+def test_cancel_keeps_the_record_as_last_saved(client, env):
     finalized = _create(client, env["a1"])
     assert _finalize(client, env["a1"], finalized["id"]).status_code == 200
     other_draft = _create(client, env["a1"], REJECTED)
-    colleague_draft = _create(client, env["a2"])
-    target = _create(client, env["a1"], {**REJECTED, **NC})  # filled in, incl. the non-conformity part
+    target = _create(client, env["a1"], {**REJECTED, **NC, "nc_root_cause": "OTHER", "nc_root_cause_other": "Causa salva."})
+    saved = client.get(f"/quality-controls/{target['id']}", headers=env["a1"]).json()
     rows_before, app_before = _qc_rows(), _app_schema_and_rows()
+    forged = {"cancelled_at": "1999-01-01T00:00:00", "cancelled_by_pharmacist_id": env["ids"]["a2@qc.test"],
+              "finalized_at": "1999-01-01T00:00:00", "exam_analyte": "FORJADO"}
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    r = _cancel(client, env["a1"], target["id"], json=forged)
+    t1 = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    r = _cancel(client, env["a1"], target["id"])
-    assert r.status_code == 204 and r.content == b""
+    assert r.status_code == 200
+    body = r.json()
+    assert t0 <= datetime.fromisoformat(body["cancelled_at"]) <= t1  # server time, payload ignored
+    assert body["cancelled_by_pharmacist_id"] == env["ids"]["a1@qc.test"]
+    assert body["finalized_at"] is None
+    ignore = {"cancelled_at", "cancelled_by_pharmacist_id", "updated_at"}
+    assert {k: v for k, v in body.items() if k not in ignore} == {k: v for k, v in saved.items() if k not in ignore}
     rows_after = _qc_rows()
-    assert target["id"] not in rows_after  # the row (all its data) is gone; nothing else references it
-    assert rows_after == {k: v for k, v in rows_before.items() if k != target["id"]}  # others byte-identical
+    # the row is kept; every saved column identical (encrypted values, NC part, no PDF), only the new state set
+    assert {k: v for k, v in rows_after[target["id"]].items() if k not in ignore} == \
+        {k: v for k, v in rows_before[target["id"]].items() if k not in ignore}
+    assert rows_after[target["id"]]["pdf_encrypted"] is None and rows_after[target["id"]]["pdf_size"] is None
+    assert {k: v for k, v in rows_after.items() if k != target["id"]} == \
+        {k: v for k, v in rows_before.items() if k != target["id"]}  # other records untouched
     assert _app_schema_and_rows() == app_before  # no other table touched
-    assert client.get(f"/quality-controls/{target['id']}", headers=env["a1"]).status_code == 404
-    history = [x["id"] for x in client.get("/quality-controls", headers=env["a1"]).json()]
-    assert target["id"] not in history
-    assert set(history) == {finalized["id"], other_draft["id"], colleague_draft["id"]}
-    assert client.get(f"/quality-controls/{finalized['id']}/pdf", headers=env["a1"]).content.startswith(b"%PDF-")
-    with get_engine().connect() as conn:
-        assert conn.execute(text("PRAGMA foreign_key_check")).fetchall() == []
+    assert client.get(f"/quality-controls/{target['id']}/pdf", headers=env["a1"]).status_code == 409  # no PDF
+    history = {x["id"]: x for x in client.get("/quality-controls", headers=env["a1"]).json()}
+    assert set(history) == {finalized["id"], other_draft["id"], target["id"]}  # still in the history
+    assert history[target["id"]]["cancelled_at"] == body["cancelled_at"] and history[target["id"]]["finalized_at"] is None
+    assert history[finalized["id"]]["cancelled_at"] is None and history[other_draft["id"]]["cancelled_at"] is None
+
+
+def test_cancelled_record_is_permanently_read_only(client, env):
+    rid = _create(client, env["a1"], {**REJECTED, **NC})["id"]
+    cancelled_at = _cancel(client, env["a1"], rid).json()["cancelled_at"]
+    rows = _qc_rows()
+    for r in (client.put(f"/quality-controls/{rid}", headers=env["a1"], json=BASE), _finalize(client, env["a1"], rid),
+              _cancel(client, env["a1"], rid)):
+        assert r.status_code == 409 and r.json()["detail"] == CANCELLED
+    assert client.delete(f"/quality-controls/{rid}", headers=env["a1"]).status_code == 405  # no delete route
+    assert _qc_rows() == rows
+    record = client.get(f"/quality-controls/{rid}", headers=env["a1"]).json()
+    assert record["cancelled_at"] == cancelled_at and record["finalized_at"] is None
 
 
 def test_finalized_record_cannot_be_cancelled(client, env):
@@ -353,10 +384,10 @@ def test_finalized_record_cannot_be_cancelled(client, env):
     assert r.status_code == 409 and r.json()["detail"] == FINALIZED
     assert _qc_rows() == rows
     assert client.get(f"/quality-controls/{rid}/pdf", headers=env["a1"]).content == pdf
-    assert client.delete(f"/quality-controls/{rid}", headers=env["a1"]).status_code == 405  # still no delete route
+    assert client.get(f"/quality-controls/{rid}", headers=env["a1"]).json()["cancelled_at"] is None
 
 
-def test_cancel_permissions(client, env):
+def test_cancel_permissions_and_isolation(client, env):
     rid = _create(client, env["a1"])["id"]
     rows = _qc_rows()
     assert _cancel(client, env["a2"], rid).status_code == 403  # colleague: not the creator
@@ -365,25 +396,77 @@ def test_cancel_permissions(client, env):
     assert client.post(f"/quality-controls/{rid}/cancel").status_code == 401
     assert _cancel(client, env["a1"], 999999).status_code == 404
     assert _qc_rows() == rows
-    # a creator moved to another establishment can no longer cancel it either
+    assert _cancel(client, env["a1"], rid).status_code == 200
+    # the cancelled record stays with establishment A: colleagues read it, B and administrators do not
+    assert client.get(f"/quality-controls/{rid}", headers=env["a2"]).json()["cancelled_at"]
+    assert rid in [x["id"] for x in client.get("/quality-controls", headers=env["a2"]).json()]
+    assert client.get(f"/quality-controls/{rid}", headers=env["b1"]).status_code == 404
+    assert rid not in [x["id"] for x in client.get("/quality-controls", headers=env["b1"]).json()]
+    assert client.get(f"/quality-controls/{rid}", headers=env["admin"]).status_code == 403
     client.patch(f"/admin/users/{env['ids']['a1@qc.test']}", headers=env["admin"], json={"establishment_id": env["est_b"]["id"]})
-    assert _cancel(client, env["a1"], rid).status_code == 404
-    assert _qc_rows() == rows
-
-
-def test_repeated_cancel_is_a_clean_404(client, env):
-    rid = _create(client, env["a1"])["id"]
-    assert _cancel(client, env["a1"], rid).status_code == 204
-    second = _cancel(client, env["a1"], rid)
-    assert second.status_code == 404 and second.json()["detail"] == "Registro de controle de qualidade não encontrado."
-    assert client.put(f"/quality-controls/{rid}", headers=env["a1"], json=BASE).status_code == 404
-    assert _finalize(client, env["a1"], rid).status_code == 404
+    assert client.get(f"/quality-controls/{rid}", headers=env["a1"]).status_code == 404  # creator moved away
+    assert client.get(f"/quality-controls/{rid}", headers=env["a2"]).json()["establishment_id"] == env["est_a"]["id"]
 
 
 def test_normal_flow_after_a_cancel(client, env):
-    assert _cancel(client, env["a1"], _create(client, env["a1"])["id"]).status_code == 204
+    cancelled = _create(client, env["a1"])["id"]
+    assert _cancel(client, env["a1"], cancelled).status_code == 200
     record = _create(client, env["a1"])
     r = _finalize(client, env["a1"], record["id"])
-    assert r.status_code == 200 and r.json()["finalized_at"]
+    assert r.status_code == 200 and r.json()["finalized_at"] and r.json()["cancelled_at"] is None
     assert "Valor encontrado: 98,5" in pdf_text(client.get(f"/quality-controls/{record['id']}/pdf", headers=env["a1"]).content)
-    assert [x["id"] for x in client.get("/quality-controls", headers=env["a1"]).json()] == [record["id"]]
+    assert [x["id"] for x in client.get("/quality-controls", headers=env["a1"]).json()] == [record["id"], cancelled]
+
+
+def _to_pre_cancellation_schema():
+    """Rebuild quality_controls as 591b694 created it (no cancellation columns), keeping its rows."""
+    raw = get_engine().raw_connection()
+    try:
+        cur = raw.cursor()
+        table_sql = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='quality_controls'").fetchone()[0]
+        index_sql = [r[0] for r in cur.execute("SELECT sql FROM sqlite_master WHERE type='index' "
+                                               "AND tbl_name='quality_controls' AND sql IS NOT NULL").fetchall()]
+        old_sql = re.sub(r",\s*\n\)$", "\n)", "\n".join(
+            line for line in table_sql.splitlines() if not any(c in line for c in NEW_COLUMNS)))
+        cols = ", ".join(r[1] for r in cur.execute("PRAGMA table_info(quality_controls)").fetchall() if r[1] not in NEW_COLUMNS)
+        cur.executescript(f"PRAGMA foreign_keys=OFF; ALTER TABLE quality_controls RENAME TO qc_pre_tmp; {old_sql}; "
+                          f"INSERT INTO quality_controls ({cols}) SELECT {cols} FROM qc_pre_tmp; DROP TABLE qc_pre_tmp; "
+                          + "; ".join(index_sql) + "; PRAGMA foreign_keys=ON;")
+        raw.commit()
+    finally:
+        raw.close()
+
+
+def _whole_db():
+    with get_engine().connect() as conn:
+        schema = conn.execute(text("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")).fetchall()
+        rows = {t: conn.execute(text(f"SELECT * FROM {t} ORDER BY rowid")).fetchall()
+                for (t,) in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+    return schema, rows
+
+
+def test_cancellation_columns_migration_is_additive_and_idempotent(client, env):
+    draft = _create(client, env["a1"], {**REJECTED, **NC})
+    done = _create(client, env["a2"])
+    _finalize(client, env["a2"], done["id"])
+    _to_pre_cancellation_schema()
+    assert not set(NEW_COLUMNS) & {c["name"] for c in inspect(get_engine()).get_columns("quality_controls")}
+    old_rows, app_before = _qc_rows(), _app_schema_and_rows()
+
+    init_db()
+    columns = {c["name"]: c for c in inspect(get_engine()).get_columns("quality_controls")}
+    assert set(NEW_COLUMNS) <= set(columns) and all(columns[c]["nullable"] for c in NEW_COLUMNS)
+    assert any(fk["constrained_columns"] == ["cancelled_by_pharmacist_id"] and fk["referred_table"] == "pharmacists"
+               for fk in inspect(get_engine()).get_foreign_keys("quality_controls"))
+    new_rows = _qc_rows()
+    assert {i: {k: v for k, v in r.items() if k not in NEW_COLUMNS} for i, r in new_rows.items()} == old_rows
+    assert all(r[c] is None for r in new_rows.values() for c in NEW_COLUMNS)  # every record keeps its state
+    assert _app_schema_and_rows() == app_before  # no other table changed
+    first = _whole_db()
+    init_db()
+    assert _whole_db() == first  # second run: no further change
+    with get_engine().connect() as conn:
+        assert conn.execute(text("PRAGMA foreign_key_check")).fetchall() == []
+    # existing records keep working: the old draft can be cancelled, the finalized PDF is unchanged
+    assert _cancel(client, env["a1"], draft["id"]).status_code == 200
+    assert client.get(f"/quality-controls/{done['id']}/pdf", headers=env["a2"]).content.startswith(b"%PDF-")

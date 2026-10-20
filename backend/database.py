@@ -66,6 +66,10 @@ _ADDED_COLUMNS = {
         "crf_uf": "VARCHAR(2)",
         "establishment_id": "INTEGER REFERENCES establishments(id)",
     },
+    "quality_controls": {
+        "cancelled_at": "DATETIME",
+        "cancelled_by_pharmacist_id": "INTEGER REFERENCES pharmacists(id)",
+    },
 }
 
 

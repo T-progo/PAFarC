@@ -2,10 +2,11 @@
 
 A record belongs to the establishment where it was created and is visible only to pharmacists
 currently linked to that establishment (records of another establishment answer 404). Only its
-creator can change a draft or cancel it (which deletes it). Finalizing validates it (a rejected
-control needs the non-conformity / corrective action), builds the PDF from the stored data and
-stores it, all in the same locked transaction as the change to finalized; afterwards the record is
-read-only and the PDF is always returned exactly as issued. No result is calculated or interpreted.
+creator can change a draft or cancel it. Finalizing validates it (a rejected control needs the
+non-conformity / corrective action), builds the PDF from the stored data and stores it, all in the
+same locked transaction as the change to finalized; afterwards the record is read-only and the PDF
+is always returned exactly as issued. Cancelling keeps the draft as last saved, read-only and
+without a PDF, in the history (Cancelado) for traceability. No result is calculated or interpreted.
 """
 
 import re
@@ -60,6 +61,8 @@ NC_REQUIRED = {
     "nc_patient_decision": "Decisão quanto às amostras dos pacientes",
 }
 FINALIZED = "Registro finalizado. Os dados deste controle de qualidade são somente para consulta."
+CANCELLED = ("Registro cancelado. Este lançamento foi preservado no histórico para rastreabilidade e não pode mais "
+             "ser alterado.")
 _EXPIRY = re.compile(r"^(\d{1,2})/(\d{4})$")
 
 
@@ -92,8 +95,9 @@ def _check_creator(record: QualityControl, pharmacist: Pharmacist) -> None:
 
 def _get_mutable(db: Session, record_id: int, pharmacist: Pharmacist) -> QualityControl:
     """Access is checked first (404, 403); then the same write lock as the consultations
-    (BEGIN IMMEDIATE) is taken and everything is re-read, so a finalization committed by another
-    request is seen and no change can commit after it."""
+    (BEGIN IMMEDIATE) is taken and everything is re-read, so a finalization or cancellation
+    committed by another request is seen and no change can commit after it. Editable only while
+    neither finalized nor cancelled."""
     _check_creator(_get_visible(db, record_id, pharmacist), pharmacist)
     consultations._begin_write(db)
     db.expire_all()
@@ -101,6 +105,8 @@ def _get_mutable(db: Session, record_id: int, pharmacist: Pharmacist) -> Quality
     _check_creator(record, pharmacist)
     if record.finalized_at is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=FINALIZED)
+    if record.cancelled_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=CANCELLED)
     return record
 
 
@@ -264,16 +270,18 @@ def finalize_quality_control(record_id: int, db: DB, pharmacist: CurrentPharmaci
     return record
 
 
-@router.post("/{record_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
-def cancel_quality_control(record_id: int, db: DB, pharmacist: CurrentPharmacist) -> Response:
-    """Discard a draft its creator gave up on ("Cancelar lançamento"). A draft is a single row
-    (nothing references it and it has no PDF), so it is deleted, under the same write lock as
-    finalization: a finalized record answers 409 and is never deleted; a draft already cancelled
-    answers 404."""
+@router.post("/{record_id}/cancel", response_model=QualityControlOut)
+def cancel_quality_control(record_id: int, db: DB, pharmacist: CurrentPharmacist) -> QualityControl:
+    """“Cancelar lançamento”: the creator gives up on a draft. The record is kept exactly as last
+    saved (no PDF is built) and becomes permanently read-only as Cancelado. Same write lock as
+    editing and finalization: a finalized or already cancelled record answers 409. Time and author
+    are set by the server."""
     record = _get_mutable(db, record_id, pharmacist)
-    db.delete(record)
+    record.cancelled_at = _now()
+    record.cancelled_by_pharmacist_id = pharmacist.id
     db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    db.refresh(record)
+    return record
 
 
 @router.get("/{record_id}/pdf", response_class=Response)

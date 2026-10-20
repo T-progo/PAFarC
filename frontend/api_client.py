@@ -133,9 +133,9 @@ class PharmaTechAPI:
     def finalize_quality_control(self, record_id: int) -> dict:
         return self._request("POST", f"/quality-controls/{record_id}/finalize")
 
-    def cancel_quality_control(self, record_id: int) -> None:
-        """Discard a draft (refused by the API once the record is finalized)."""
-        self._request("POST", f"/quality-controls/{record_id}/cancel")
+    def cancel_quality_control(self, record_id: int) -> dict:
+        """Mark a draft Cancelado (kept read-only in the history; refused once finalized)."""
+        return self._request("POST", f"/quality-controls/{record_id}/cancel")
 
     def quality_control_pdf(self, record_id: int) -> bytes:
         """The PDF stored when the record was finalized, exactly as issued."""

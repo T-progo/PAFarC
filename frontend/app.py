@@ -1167,7 +1167,12 @@ QC_NC_TEXT = ("nc_root_cause_other", "nc_corrective_action", "nc_repeat_value")
 QC_CHOICES = ("evaluation_status", "nc_root_cause", "nc_repeat_status", "nc_patient_decision")
 QC_FINALIZE_WARNING = ("Após finalizar, o registro e o PDF não poderão mais ser alterados ou excluídos. "
                        "Deseja continuar?")
-QC_CANCEL_WARNING = "Deseja cancelar este lançamento? Os dados preenchidos neste registro serão descartados."
+QC_CANCEL_WARNING = ("Deseja cancelar este lançamento? O registro será mantido no histórico como Cancelado e não "
+                     "poderá mais ser alterado.")
+QC_CANCEL_UNSAVED = ("Existem alterações ainda não salvas. Salve ou cancele as alterações antes de cancelar o "
+                     "lançamento.")
+QC_CANCELLED_NOTICE = ("Registro cancelado. Este lançamento foi preservado no histórico para rastreabilidade e não "
+                       "pode mais ser alterado.")
 
 
 def qc_datetime(iso: str | None) -> str:
@@ -1176,6 +1181,8 @@ def qc_datetime(iso: str | None) -> str:
 
 
 def qc_state_label(record: dict) -> str:
+    if record.get("cancelled_at"):
+        return "Cancelado"
     return "Finalizado" if record["finalized_at"] else "Em preenchimento"
 
 
@@ -1267,7 +1274,8 @@ def qc_record_view(rid: int) -> None:
         show_api_error(exc)
         return
     me = st.session_state["pharmacist"]
-    editable = record["finalized_at"] is None and record["pharmacist_id"] == me["id"]
+    draft = record["finalized_at"] is None and record.get("cancelled_at") is None
+    editable = draft and record["pharmacist_id"] == me["id"]
     with st.container(border=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1277,7 +1285,10 @@ def qc_record_view(rid: int) -> None:
         with col3:
             field("Situação", qc_state_label(record))
     if not editable:
-        if record["finalized_at"] is None:
+        if record.get("cancelled_at"):
+            st.warning(QC_CANCELLED_NOTICE)
+            st.markdown(f"Data do cancelamento: **{qc_datetime(record['cancelled_at'])}**")
+        elif draft:
             st.info("Rascunho de outro farmacêutico: somente leitura.")
         qc_read_only(record)
         return
@@ -1400,24 +1411,27 @@ def qc_editor(record: dict) -> None:
                 st.session_state[f"qc_cancel_confirm_{rid}"] = True
                 st.rerun()
         st.markdown(":orange[● Alterações não salvas]" if dirty else ":gray[✓ Rascunho salvo]")
-    qc_cancel_confirmation(rid)
+    qc_cancel_confirmation(rid, dirty)
     qc_finalize_section(rid, dirty)
 
 
-def qc_cancel_confirmation(rid: int) -> None:
-    """“Cancelar lançamento”: after confirmation the draft is discarded (deleted by the API, which
-    refuses it once the record is finalized) and the user returns to the QC screen."""
+def qc_cancel_confirmation(rid: int, dirty: bool) -> None:
+    """“Cancelar lançamento”: after confirmation the draft is kept, as last saved, in the history as
+    Cancelado (read-only, no PDF). Blocked while there are unsaved changes, which would otherwise be
+    lost silently; the record then reopens read-only."""
     confirm_key = f"qc_cancel_confirm_{rid}"
     if not st.session_state.get(confirm_key):
         return
     with st.container(border=True):
         st.warning(QC_CANCEL_WARNING)
+        if dirty:
+            st.error(QC_CANCEL_UNSAVED)
         with st.container(horizontal=True):
             if st.button("Voltar", key=f"qc_cancel_no_{rid}"):
                 st.session_state.pop(confirm_key, None)
                 st.rerun()
             with st.container(key="qc_cancel_confirm_actions", width="content"):
-                confirmed = st.button("Sim, cancelar lançamento", key=f"qc_cancel_yes_{rid}")
+                confirmed = st.button("Sim, cancelar lançamento", key=f"qc_cancel_yes_{rid}", disabled=dirty)
         if confirmed:
             try:
                 api().cancel_quality_control(rid)
@@ -1429,7 +1443,6 @@ def qc_cancel_confirmation(rid: int) -> None:
                 del st.session_state[key]
             st.session_state.pop(confirm_key, None)
             st.session_state.pop(f"qc_finalize_confirm_{rid}", None)
-            close_quality_control()
             st.session_state["flash"] = "Lançamento cancelado."
             st.rerun()
 

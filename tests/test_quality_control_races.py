@@ -1,7 +1,8 @@
-"""Concurrency of quality-control drafts and finalization: once finalization commits, no change may
-commit to the record. Same deterministic technique as the consultation races: one request is paused
-at the write-lock step (just before taking it, or while holding it) while another runs; a trigger
-records any update to an already finalized record. Fictitious data only."""
+"""Concurrency of quality-control drafts, finalization and cancellation: once finalization or
+cancellation commits, no change may commit to the record. Same deterministic technique as the
+consultation races: one request is paused at the write-lock step (just before taking it, or while
+holding it) while another runs; triggers record any update to an already finalized or cancelled
+record and any deletion. Fictitious data only."""
 import threading
 from io import BytesIO
 
@@ -32,8 +33,11 @@ def env(client, db):
     raw = get_engine().raw_connection()
     raw.executescript("""
         CREATE TABLE qc_late_writes (record_id INTEGER);
-        CREATE TRIGGER qc_lw AFTER UPDATE ON quality_controls WHEN OLD.finalized_at IS NOT NULL
+        CREATE TRIGGER qc_lw AFTER UPDATE ON quality_controls
+          WHEN OLD.finalized_at IS NOT NULL OR OLD.cancelled_at IS NOT NULL
           BEGIN INSERT INTO qc_late_writes VALUES (NEW.id); END;
+        CREATE TRIGGER qc_del AFTER DELETE ON quality_controls
+          BEGIN INSERT INTO qc_late_writes VALUES (OLD.id); END;
     """)
     raw.commit()
     raw.close()
@@ -188,11 +192,21 @@ def test_concurrent_stress_no_write_after_finalization(env):
 # --- "Cancelar lançamento" against finalization / editing / a second cancel --------------------
 
 cancel = lambda env, c, rid: c.post(f"/quality-controls/{rid}/cancel", headers=env["h"])
+update = lambda env, c, rid, data: c.put(f"/quality-controls/{rid}", headers=env["h"], json=data)
 
 
-def row_count(rid):
+def stored(rid):
     with get_engine().connect() as conn:
-        return conn.execute(text("SELECT count(*) FROM quality_controls WHERE id = :i"), {"i": rid}).scalar()
+        return conn.execute(text("SELECT finalized_at, cancelled_at, pdf_encrypted IS NOT NULL FROM quality_controls "
+                                 "WHERE id = :i"), {"i": rid}).fetchone()
+
+
+def assert_cancelled_without_pdf(env, rid, cancelled_at):
+    finalized_at, stored_cancelled_at, has_pdf = stored(rid)  # the row is always kept
+    record = env["c1"].get(f"/quality-controls/{rid}", headers=env["h"]).json()
+    assert finalized_at is None and stored_cancelled_at is not None and not has_pdf
+    assert record["cancelled_at"] == cancelled_at and record["finalized_at"] is None
+    assert env["c1"].get(f"/quality-controls/{rid}/pdf", headers=env["h"]).status_code == 409
 
 
 @pytest.mark.parametrize("mode", ["before", "after"])
@@ -203,16 +217,36 @@ def test_cancel_vs_finalize_exactly_one_wins(env, monkeypatch, mode, slow_is):
     slow, fast = interleave(monkeypatch, mode, *((do_cancel, do_finalize) if slow_is == "cancel" else (do_finalize, do_cancel)))
     cancel_r, finalize_r = (slow, fast) if slow_is == "cancel" else (fast, slow)
     # "before": the fast request takes the lock first; "after": the slow one already holds it
-    cancel_won = (slow_is == "cancel") == (mode == "after")
-    if cancel_won:
-        assert cancel_r.status_code == 204 and finalize_r.status_code == 404
-        assert row_count(rid) == 0
+    if (slow_is == "cancel") == (mode == "after"):  # cancellation commits first
+        assert cancel_r.status_code == 200 and finalize_r.status_code == 409
+        assert finalize_r.json()["detail"].startswith("Registro cancelado.")
+        assert_cancelled_without_pdf(env, rid, cancel_r.json()["cancelled_at"])
     else:
         assert finalize_r.status_code == 200 and cancel_r.status_code == 409
-        assert row_count(rid) == 1
+        assert cancel_r.json()["detail"].startswith("Registro finalizado.")
         record = env["c1"].get(f"/quality-controls/{rid}", headers=env["h"]).json()
-        assert record["finalized_at"] == finalize_r.json()["finalized_at"]
+        assert record["finalized_at"] == finalize_r.json()["finalized_at"] and record["cancelled_at"] is None
         assert env["c1"].get(f"/quality-controls/{rid}/pdf", headers=env["h"]).content.startswith(b"%PDF-")
+    assert late_writes() == []
+
+
+@pytest.mark.parametrize("mode", ["before", "after"])
+@pytest.mark.parametrize("slow_is", ["cancel", "update"])
+def test_cancel_vs_update(env, monkeypatch, mode, slow_is):
+    rid = create(env, REJECTED)
+    change = {**REJECTED, "nc_corrective_action": "Ação salva antes do cancelamento."}
+    do_cancel, do_update = lambda: cancel(env, env["c1"], rid), lambda: update(env, env["c2"], rid, change)
+    slow, fast = interleave(monkeypatch, mode, *((do_cancel, do_update) if slow_is == "cancel" else (do_update, do_cancel)))
+    cancel_r, update_r = (slow, fast) if slow_is == "cancel" else (fast, slow)
+    assert cancel_r.status_code == 200
+    record = env["c1"].get(f"/quality-controls/{rid}", headers=env["h"]).json()
+    if (slow_is == "cancel") == (mode == "after"):  # cancellation commits first: the late update is refused
+        assert update_r.status_code == 409 and update_r.json()["detail"].startswith("Registro cancelado.")
+        assert record["nc_corrective_action"] == "Recalibrado."
+    else:  # the update commits first and the cancelled record keeps it
+        assert update_r.status_code == 200
+        assert record["nc_corrective_action"] == "Ação salva antes do cancelamento."
+    assert_cancelled_without_pdf(env, rid, cancel_r.json()["cancelled_at"])
     assert late_writes() == []
 
 
@@ -220,38 +254,38 @@ def test_cancel_vs_finalize_exactly_one_wins(env, monkeypatch, mode, slow_is):
 def test_cancel_vs_cancel(env, monkeypatch, mode):
     rid = create(env, BASE)
     slow, fast = interleave(monkeypatch, mode, lambda: cancel(env, env["c1"], rid), lambda: cancel(env, env["c2"], rid))
-    assert sorted([slow.status_code, fast.status_code]) == [204, 404]
-    assert row_count(rid) == 0
+    assert sorted([slow.status_code, fast.status_code]) == [200, 409]
+    winner = slow if slow.status_code == 200 else fast
+    assert_cancelled_without_pdf(env, rid, winner.json()["cancelled_at"])  # one stable cancellation time
+    assert late_writes() == []
 
 
-def test_cancel_holding_the_lock_then_edit_finds_nothing(env, monkeypatch):
-    rid = create(env, BASE)
-    slow, fast = interleave(monkeypatch, "after", lambda: cancel(env, env["c1"], rid),
-                            lambda: env["c2"].put(f"/quality-controls/{rid}", headers=env["h"], json={**BASE, "value_found": "1"}))
-    assert slow.status_code == 204 and fast.status_code == 404
-    assert row_count(rid) == 0
-
-
-def test_concurrent_stress_cancel_and_finalize(env):
+def test_concurrent_stress_cancel_finalize_and_edit(env):
     codes = []
     for _ in range(10):
-        rid = create(env, BASE)
-        barrier = threading.Barrier(4)
+        rid = create(env, REJECTED)
+        barrier = threading.Barrier(6)
+        transitions = []
 
-        def run(fn):
+        def run(kind, fn):
             barrier.wait()
-            codes.append(fn().status_code)
+            code = fn().status_code
+            codes.append(code)
+            if kind == "transition":
+                transitions.append(code)
 
-        threads = [threading.Thread(target=run, args=(f,)) for f in (
-            lambda: cancel(env, env["c1"], rid), lambda: cancel(env, env["c2"], rid),
-            lambda: finalize(env, env["c1"], rid), lambda: finalize(env, env["c2"], rid))]
+        threads = [threading.Thread(target=run, args=a) for a in (
+            ("transition", lambda: cancel(env, env["c1"], rid)), ("transition", lambda: cancel(env, env["c2"], rid)),
+            ("transition", lambda: finalize(env, env["c1"], rid)), ("transition", lambda: finalize(env, env["c2"], rid)),
+            ("edit", lambda: update(env, env["c1"], rid, {**REJECTED, "nc_corrective_action": "Ação A"})),
+            ("edit", lambda: update(env, env["c2"], rid, {**REJECTED, "nc_corrective_action": "Ação B"})))]
         for t in threads:
             t.start()
         for t in threads:
             t.join(60)
-        record = env["c1"].get(f"/quality-controls/{rid}", headers=env["h"])
-        # either gone, or finalized with its PDF: never a half state
-        assert record.status_code == 404 or (record.json()["finalized_at"] and
-                                             env["c1"].get(f"/quality-controls/{rid}/pdf", headers=env["h"]).status_code == 200)
-    assert set(codes) <= {200, 204, 404, 409}, set(codes)
-    assert late_writes() == []
+        assert sorted(transitions) == [200, 409, 409, 409]  # exactly one transition won
+        finalized_at, cancelled_at, has_pdf = stored(rid)  # never deleted, never both, never a half state
+        assert (finalized_at is None) != (cancelled_at is None)
+        assert has_pdf == (finalized_at is not None)
+    assert set(codes) <= {200, 409}, set(codes)
+    assert late_writes() == []  # 0 writes after cancellation or finalization, 0 deletions

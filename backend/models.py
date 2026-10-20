@@ -246,7 +246,8 @@ class EstablishmentSettings(Base):
 class QualityControl(Base):
     """A CIQ/CEQ quality-control execution, owned by the establishment where it was created (no
     patient). Editable by its creator while a draft; once finalized it is read-only and its PDF is
-    stored exactly as issued. Technical values are kept as entered (free text) and encrypted."""
+    stored exactly as issued; a cancelled draft is kept read-only in the history. Technical values
+    are kept as entered (free text) and encrypted."""
 
     __tablename__ = "quality_controls"
     __table_args__ = (Index("ix_quality_controls_establishment_execution", "establishment_id", "execution_at"),)
@@ -291,6 +292,10 @@ class QualityControl(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "Cancelar lançamento": a draft given up on is kept (read-only, no PDF) as Cancelado. A record
+    # is never both finalized and cancelled.
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_by_pharmacist_id: Mapped[int | None] = mapped_column(ForeignKey("pharmacists.id"), nullable=True)
     pdf: Mapped[bytes | None] = mapped_column("pdf_encrypted", EncryptedBinary, nullable=True, deferred=True)
     pdf_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
