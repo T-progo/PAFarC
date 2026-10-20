@@ -368,3 +368,66 @@ class DocumentPDF(FPDF):
 
     def to_bytes(self) -> bytes:
         return bytes(self.output())
+
+
+@dataclass(frozen=True)
+class QualityControlContext:
+    """Header, footer and signature data of a quality-control record (it has no patient)."""
+    establishment: Establishment
+    pharmacist_name: str
+    pharmacist_crf: str
+    issued_at: datetime
+
+
+class QualityControlPDF(DocumentPDF):
+    """Same identity as the clinical documents, without the patient box: the record belongs to an
+    establishment, and continuation pages name the module instead of a patient."""
+
+    def header(self) -> None:
+        if self.page_no() == 1:
+            super().header()
+            return
+        self.set_y(9)
+        self.set_text_color(*MUTED)
+        self.set_font(FONT, "", 8)
+        half = self.epw / 2 - 2
+        self.cell(half, 5, f"{APP_NAME} · Controle de Qualidade")
+        self.set_x(MARGIN + half + 4)
+        self.cell(half, 5, self._fit(f"{self.doc_title} (continuação)", half), align="R")
+        self.set_draw_color(*RULE)
+        self.line(MARGIN, 15.5, self.w - MARGIN, 15.5)
+        self.set_y(21)
+        self.set_text_color(*TEXT)
+
+    def _identification(self) -> None:
+        self.set_font(FONT, "", 8.5)
+        self.set_text_color(*MUTED)
+        self.cell(0, 4, "RDC 978/2025", align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_text_color(*TEXT)
+        self.ln(4)
+
+    def status_box(self, text: str, alert: bool) -> None:
+        """The evaluation status, boxed; a rejected status gets a heavier frame."""
+        self.set_font(FONT, "B", 11)
+        self.set_text_color(*TEXT)
+        self.set_draw_color(*(TEXT if alert else RULE))
+        self.set_line_width(0.6 if alert else 0.2)
+        self.cell(0, 9, text, border=1, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_line_width(0.2)
+        self.ln(2)
+
+    def part_heading(self, text: str) -> None:
+        """Heading of a second part of the same document (e.g. the non-conformity record)."""
+        if self.get_y() > self.page_break_trigger - 40:
+            self.add_page()
+        self.ln(6)
+        self.set_font(FONT, "B", 12)
+        self.set_text_color(*GRAPHITE)
+        self.multi_cell(0, 6.5, text, align="C", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_draw_color(*SILVER)
+        self.set_line_width(0.6)
+        y = self.get_y() + 1.5
+        self.line(self.w / 2 - 25, y, self.w / 2 + 25, y)
+        self.set_line_width(0.2)
+        self.set_y(y + 4)
+        self.set_text_color(*TEXT)

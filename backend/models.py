@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.crypto import EncryptedBinary, EncryptedDate, EncryptedString
@@ -241,3 +241,65 @@ class EstablishmentSettings(Base):
     phone: Mapped[str] = mapped_column(String(40), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("pharmacists.id"), nullable=True)
+
+
+class QualityControl(Base):
+    """A CIQ/CEQ quality-control execution, owned by the establishment where it was created (no
+    patient). Editable by its creator while a draft; once finalized it is read-only and its PDF is
+    stored exactly as issued. Technical values are kept as entered (free text) and encrypted."""
+
+    __tablename__ = "quality_controls"
+    __table_args__ = (Index("ix_quality_controls_establishment_execution", "establishment_id", "execution_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    establishment_id: Mapped[int] = mapped_column(ForeignKey("establishments.id"))
+    pharmacist_id: Mapped[int] = mapped_column(ForeignKey("pharmacists.id"), index=True)
+    # Responsible professional as at the creator's last change (frozen at finalization).
+    responsible_name: Mapped[str] = mapped_column(String(200))
+    responsible_crf: Mapped[str] = mapped_column(String(40))
+    control_type: Mapped[str] = mapped_column(String(3))  # CIQ / CEQ
+    execution_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    exam_analyte: Mapped[str | None] = mapped_column("exam_analyte_encrypted", EncryptedString, nullable=True)
+    equipment_methodology: Mapped[str | None] = mapped_column("equipment_methodology_encrypted", EncryptedString,
+                                                              nullable=True)
+    provider_manufacturer: Mapped[str | None] = mapped_column("provider_manufacturer_encrypted", EncryptedString,
+                                                              nullable=True)
+    control_lot: Mapped[str | None] = mapped_column("control_lot_encrypted", EncryptedString, nullable=True)
+    control_expiry: Mapped[str | None] = mapped_column("control_expiry_encrypted", EncryptedString,
+                                                       nullable=True)  # "YYYY-MM"
+    value_found: Mapped[str | None] = mapped_column("value_found_encrypted", EncryptedString, nullable=True)
+    unit: Mapped[str | None] = mapped_column("unit_encrypted", EncryptedString, nullable=True)
+    target_mean: Mapped[str | None] = mapped_column("target_mean_encrypted", EncryptedString, nullable=True)
+    standard_deviation: Mapped[str | None] = mapped_column("standard_deviation_encrypted", EncryptedString,
+                                                           nullable=True)
+    acceptable_range_min: Mapped[str | None] = mapped_column("acceptable_range_min_encrypted", EncryptedString,
+                                                             nullable=True)
+    acceptable_range_max: Mapped[str | None] = mapped_column("acceptable_range_max_encrypted", EncryptedString,
+                                                             nullable=True)
+    evaluation_status: Mapped[str | None] = mapped_column(String(10), nullable=True)  # APPROVED / REJECTED
+    # Non-conformity / corrective action (required to finalize a REJECTED record).
+    nc_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    nc_root_cause: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    nc_root_cause_other: Mapped[str | None] = mapped_column("nc_root_cause_other_encrypted", EncryptedString,
+                                                            nullable=True)
+    nc_corrective_action: Mapped[str | None] = mapped_column("nc_corrective_action_encrypted", EncryptedString,
+                                                             nullable=True)
+    nc_repeat_value: Mapped[str | None] = mapped_column("nc_repeat_value_encrypted", EncryptedString,
+                                                        nullable=True)
+    nc_repeat_status: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    nc_patient_decision: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pdf: Mapped[bytes | None] = mapped_column("pdf_encrypted", EncryptedBinary, nullable=True, deferred=True)
+    pdf_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    establishment: Mapped["Establishment"] = relationship()
+
+    @property
+    def control_expiry_display(self) -> str:
+        """Stored as YYYY-MM, shown as MM/YYYY."""
+        if not self.control_expiry:
+            return ""
+        year, month = self.control_expiry.split("-")
+        return f"{month}/{year}"

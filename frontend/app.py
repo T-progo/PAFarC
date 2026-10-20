@@ -23,6 +23,7 @@ ESTABLISHMENT = "PAFarC — Programa de Aperfeiçoamento em Farmácia Clínica"
 
 NAV_SEARCH = "Buscar paciente"
 NAV_REGISTER = "Cadastrar paciente"
+NAV_QC = "Controle de Qualidade"
 NAV_USERS = "Administração · Usuários"
 NAV_ESTABLISHMENT = "Administração · Estabelecimentos"
 ADMIN_NAV = (NAV_USERS, NAV_ESTABLISHMENT)
@@ -235,7 +236,7 @@ def menu_options() -> list[str]:
     """Clinical entries for clinical users, administration entries for administrators only.
     (The API enforces the same rules; this only decides what is shown.)"""
     user = st.session_state["pharmacist"]
-    options = [NAV_SEARCH, NAV_REGISTER] if user.get("clinical_access", True) else []
+    options = [NAV_SEARCH, NAV_REGISTER, NAV_QC] if user.get("clinical_access", True) else []
     if user.get("is_admin"):
         options += list(ADMIN_NAV)
     return options
@@ -1136,6 +1137,292 @@ def dsf_form(cid: int, consultation: dict) -> dict | None:
     return None
 
 
+
+# --- Controle de Qualidade (CIQ / CEQ) -------------------------------------------------
+
+QC_STATUS_LABELS = {"APPROVED": "Aprovado / Adequado", "REJECTED": "Rejeitado / Inadequado"}
+QC_REPEAT_LABELS = {"APPROVED": "Aprovado", "REJECTED": "Rejeitado"}
+QC_ROOT_CAUSES = {
+    "EXPIRED": "Validade do reagente/controle expirada",
+    "STORAGE": "Erro de armazenamento / reconstituição do controle",
+    "CALIBRATION": "Falha de calibração do equipamento/dispositivo",
+    "DEFECTIVE_LOT": "Insumo/fita com defeito de lote",
+    "OTHER": "Outro",
+}
+QC_DECISIONS = {
+    "APPROVED_FOR_PATIENT_TESTING": "Aprovado para realização e liberação dos exames dos pacientes",
+    "BLOCKED_UNTIL_TECHNICAL_MAINTENANCE": "Bloqueado até manutenção técnica",
+}
+QC_TEXT_FIELDS = [  # (key, label) in form order
+    ("exam_analyte", "Exame / Analito"), ("equipment_methodology", "Equipamento / Metodologia"),
+    ("provider_manufacturer", "Provedor / Fabricante"), ("control_lot", "Lote do controle"),
+    ("control_expiry", "Validade do controle (MM/AAAA)"), ("value_found", "Valor encontrado"), ("unit", "Unidade"),
+    ("target_mean", "Média alvo"), ("standard_deviation", "Desvio padrão"),
+    ("acceptable_range_min", "Faixa aceitável — mínimo"), ("acceptable_range_max", "Faixa aceitável — máximo"),
+]
+QC_NC_TEXT = ("nc_root_cause_other", "nc_corrective_action", "nc_repeat_value")
+QC_CHOICES = ("evaluation_status", "nc_root_cause", "nc_repeat_status", "nc_patient_decision")
+QC_FINALIZE_WARNING = ("Após finalizar, o registro e o PDF não poderão mais ser alterados ou excluídos. "
+                       "Deseja continuar?")
+
+
+def qc_datetime(iso: str | None) -> str:
+    """DD/MM/YYYY - HH:MM in local time."""
+    return format_timestamp(iso).replace(" ", " - ", 1) if iso else "—"
+
+
+def qc_state_label(record: dict) -> str:
+    return "Finalizado" if record["finalized_at"] else "Em preenchimento"
+
+
+def qc_payload(record: dict) -> dict:
+    """The record's saved content in the form/request shape."""
+    payload = {"control_type": record["control_type"]}
+    payload.update({key: record.get(key) or "" for key, _ in QC_TEXT_FIELDS})
+    payload.update({key: record.get(key) or "" for key in QC_NC_TEXT})
+    payload.update({key: record.get(key) for key in QC_CHOICES})
+    return payload
+
+
+def qc_widget_values(rid: int, saved: dict) -> dict:
+    """Current form values (widgets keep what was typed until saved)."""
+    values = {"control_type": st.session_state.get(f"qc_{rid}_control_type", saved["control_type"])}
+    for key, _ in QC_TEXT_FIELDS:
+        values[key] = st.session_state.get(f"qc_{rid}_{key}", saved[key])
+    for key in QC_NC_TEXT:
+        values[key] = st.session_state.get(f"qc_{rid}_{key}", saved[key])
+    for key in QC_CHOICES:
+        values[key] = st.session_state.get(f"qc_{rid}_{key}", saved[key])
+    return values
+
+
+def qc_is_dirty(current: dict, saved: dict) -> bool:
+    norm = lambda v: (v or "").strip() if isinstance(v, str) or v is None else v
+    return any(norm(current[k]) != norm(saved[k]) for k in saved)
+
+
+def open_quality_control(record_id: int) -> None:
+    st.session_state["qc_id"] = record_id
+
+
+def close_quality_control() -> None:
+    st.session_state.pop("qc_id", None)
+
+
+def quality_control_view() -> None:
+    st.header("Controle de Qualidade")
+    if flash := st.session_state.pop("flash", None):
+        st.success(flash)
+    if "qc_id" in st.session_state:
+        st.button("← Voltar ao histórico", key="qc_back", on_click=close_quality_control)
+        qc_record_view(st.session_state["qc_id"])
+        return
+    new_tab, history_tab = st.tabs(["Novo registro", "Histórico"])
+    with new_tab:
+        st.caption("Registro manual de controle de qualidade (CIQ / CEQ). A data e a hora da execução são "
+                   "registradas automaticamente pelo sistema ao iniciar o registro.")
+        control_type = st.radio("Tipo de controle", ["CIQ", "CEQ"], horizontal=True, key="qc_new_type")
+        if st.button("Iniciar registro", type="primary", key="qc_new_start"):
+            try:
+                record = api().create_quality_control({"control_type": control_type})
+            except ApiError as exc:
+                show_api_error(exc)
+            else:
+                st.session_state["flash"] = "Registro iniciado. Preencha os dados e salve."
+                open_quality_control(record["id"])
+                st.rerun()
+    with history_tab:
+        qc_history()
+
+
+def qc_history() -> None:
+    try:
+        records = api().list_quality_controls()
+    except ApiError as exc:
+        show_api_error(exc)
+        return
+    if not records:
+        st.markdown('<p class="pt-muted">Nenhum registro de controle de qualidade.</p>', unsafe_allow_html=True)
+        return
+    for record in records:
+        left, right = st.columns([5, 1])
+        status = QC_STATUS_LABELS.get(record["evaluation_status"], "Status não informado")
+        left.markdown(
+            f"**{qc_datetime(record['execution_at'])}** · {record['control_type']} · "
+            f"{md(record['exam_analyte'] or '—')} · {status} · {md(record['responsible_name'])} · "
+            f"{qc_state_label(record)}"
+        )
+        right.button("Abrir", key=f"qc_open_{record['id']}", on_click=open_quality_control, args=(record["id"],))
+
+
+def qc_record_view(rid: int) -> None:
+    try:
+        record = api().get_quality_control(rid)
+    except ApiError as exc:
+        close_quality_control()
+        show_api_error(exc)
+        return
+    me = st.session_state["pharmacist"]
+    editable = record["finalized_at"] is None and record["pharmacist_id"] == me["id"]
+    with st.container(border=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            field("Data e hora da execução", qc_datetime(record["execution_at"]))
+        with col2:
+            field("Responsável", f"{record['responsible_name']} · {record['responsible_crf']}")
+        with col3:
+            field("Situação", qc_state_label(record))
+    if not editable:
+        if record["finalized_at"] is None:
+            st.info("Rascunho de outro farmacêutico: somente leitura.")
+        qc_read_only(record)
+        return
+    qc_editor(record)
+
+
+def qc_read_only(record: dict) -> None:
+    rows = [("Tipo de controle", record["control_type"])] + [
+        (label.replace(" (MM/AAAA)", ""), record.get(key) or "—") for key, label in QC_TEXT_FIELDS]
+    rows.append(("Status da avaliação", QC_STATUS_LABELS.get(record["evaluation_status"], "—")))
+    st.dataframe([{"Campo": k, "Valor": v} for k, v in rows], hide_index=True, width="stretch")
+    if record["evaluation_status"] == "REJECTED":
+        st.markdown("**Não Conformidade e Ação Corretiva**")
+        nc = [
+            ("Data do evento", qc_datetime(record["nc_event_at"])),
+            ("Exame afetado", record["exam_analyte"] or "—"),
+            ("Valor fora da faixa", f"{record['value_found'] or ''} {record['unit'] or ''}".strip() or "—"),
+            ("Causa raiz", QC_ROOT_CAUSES.get(record["nc_root_cause"], "—")),
+            ("Descrição (Outro)", record["nc_root_cause_other"] or "—"),
+            ("Ação corretiva", record["nc_corrective_action"] or "—"),
+            ("Novo valor obtido", record["nc_repeat_value"] or "—"),
+            ("Status do novo teste", QC_REPEAT_LABELS.get(record["nc_repeat_status"], "—")),
+            ("Amostras dos pacientes", QC_DECISIONS.get(record["nc_patient_decision"], "—")),
+        ]
+        st.dataframe([{"Campo": k, "Valor": v} for k, v in nc], hide_index=True, width="stretch")
+    if record["finalized_at"]:
+        token = st.session_state.get("token")
+        st.download_button(
+            "Reimprimir PDF",
+            data=lambda: PharmaTechAPI(token=token).quality_control_pdf(record["id"]),
+            file_name=f"controle-qualidade-{record['control_type'].lower()}-{record['id']}.pdf",
+            mime="application/pdf", on_click="ignore", type="primary", key=f"qc_pdf_{record['id']}",
+        )
+
+
+def qc_editor(record: dict) -> None:
+    rid = record["id"]
+    saved = qc_payload(record)
+    k = lambda key: f"qc_{rid}_{key}"
+    # Not an st.form: the non-conformity section must appear as soon as "Rejeitado" is chosen, and
+    # typed values must stay visible (and be detected as unsaved) until “Salvar rascunho”.
+    with st.container(border=True):
+        st.subheader("1. Dados da execução")
+        st.radio("Tipo de controle", ["CIQ", "CEQ"], index=["CIQ", "CEQ"].index(saved["control_type"]),
+                 horizontal=True, key=k("control_type"))
+        c1, c2 = st.columns(2)
+        c1.text_input("Exame / Analito", value=saved["exam_analyte"], max_chars=200, key=k("exam_analyte"))
+        c2.text_input("Equipamento / Metodologia", value=saved["equipment_methodology"], max_chars=200,
+                      key=k("equipment_methodology"))
+    with st.container(border=True):
+        st.subheader("2. Dados do controle / reagente")
+        c1, c2, c3 = st.columns([3, 2, 2])
+        c1.text_input("Provedor / Fabricante", value=saved["provider_manufacturer"], max_chars=200,
+                      key=k("provider_manufacturer"))
+        c2.text_input("Lote do controle", value=saved["control_lot"], max_chars=100, key=k("control_lot"))
+        c3.text_input("Validade do controle (MM/AAAA)", value=saved["control_expiry"], max_chars=7,
+                      placeholder="MM/AAAA", key=k("control_expiry"))
+    with st.container(border=True):
+        st.subheader("3. Resultado obtido")
+        st.caption("Valores digitados manualmente, como constam no controle. O sistema não calcula nem interpreta.")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.text_input("Valor encontrado", value=saved["value_found"], max_chars=50, key=k("value_found"))
+        c2.text_input("Unidade", value=saved["unit"], max_chars=50, key=k("unit"))
+        c3.text_input("Média alvo", value=saved["target_mean"], max_chars=50, key=k("target_mean"))
+        c4.text_input("Desvio padrão", value=saved["standard_deviation"], max_chars=50, key=k("standard_deviation"))
+        c1, c2 = st.columns(2)
+        c1.text_input("Faixa aceitável — mínimo", value=saved["acceptable_range_min"], max_chars=50,
+                      key=k("acceptable_range_min"))
+        c2.text_input("Faixa aceitável — máximo", value=saved["acceptable_range_max"], max_chars=50,
+                      key=k("acceptable_range_max"))
+    with st.container(border=True):
+        st.subheader("4. Status da avaliação")
+        statuses = list(QC_STATUS_LABELS)
+        status = st.radio("Avaliação do responsável", statuses, format_func=QC_STATUS_LABELS.get, horizontal=True,
+                          index=statuses.index(saved["evaluation_status"]) if saved["evaluation_status"] else None,
+                          key=k("evaluation_status"))
+    if status == "REJECTED":
+        with st.container(border=True):
+            st.subheader("5. Não Conformidade e Ação Corretiva")
+            st.error("Controle rejeitado: preencha a não conformidade e a ação corretiva antes de finalizar.")
+            exam = st.session_state.get(k("exam_analyte"), "") or "—"
+            found, unit = st.session_state.get(k("value_found"), ""), st.session_state.get(k("unit"), "")
+            value = f"{found} {unit}".strip() or "—"
+            st.markdown(f"Exame afetado: **{md(exam)}** · Valor fora da faixa encontrado: **{md(value)}**  \n"
+                        "Data do evento: registrada automaticamente ao salvar.")
+            causes = list(QC_ROOT_CAUSES)
+            cause = st.selectbox("Causa raiz", causes, format_func=QC_ROOT_CAUSES.get, placeholder="Selecione",
+                                 index=causes.index(saved["nc_root_cause"]) if saved["nc_root_cause"] else None,
+                                 key=k("nc_root_cause"))
+            if cause == "OTHER":
+                st.text_input("Descrição da causa raiz (Outro)", value=saved["nc_root_cause_other"], max_chars=1000,
+                              key=k("nc_root_cause_other"))
+            st.text_area("Ação corretiva adotada", value=saved["nc_corrective_action"], max_chars=4000, height=110,
+                         key=k("nc_corrective_action"))
+            c1, c2 = st.columns(2)
+            c1.text_input("Repetição — novo valor obtido", value=saved["nc_repeat_value"], max_chars=50,
+                          key=k("nc_repeat_value"))
+            repeats = list(QC_REPEAT_LABELS)
+            c2.radio("Status do novo teste", repeats, format_func=QC_REPEAT_LABELS.get, horizontal=True,
+                     index=repeats.index(saved["nc_repeat_status"]) if saved["nc_repeat_status"] else None,
+                     key=k("nc_repeat_status"))
+            decisions = list(QC_DECISIONS)
+            st.radio("Decisão quanto às amostras dos pacientes", decisions, format_func=QC_DECISIONS.get,
+                     index=decisions.index(saved["nc_patient_decision"]) if saved["nc_patient_decision"] else None,
+                     key=k("nc_patient_decision"))
+    current = qc_widget_values(rid, saved)
+    dirty = qc_is_dirty(current, saved)
+    save_col, state_col = st.columns([1, 4])
+    if save_col.button("Salvar rascunho", type="primary", key=k("save")):
+        try:
+            api().update_quality_control(rid, current)
+        except ApiError as exc:
+            show_api_error(exc)
+        else:
+            st.session_state["flash"] = "Rascunho salvo."
+            st.rerun()
+    state_col.markdown(":orange[● Alterações não salvas]" if dirty else ":gray[✓ Rascunho salvo]")
+    qc_finalize_section(rid, dirty)
+
+
+def qc_finalize_section(rid: int, dirty: bool) -> None:
+    confirm_key = f"qc_finalize_confirm_{rid}"
+    with st.container(border=True):
+        st.subheader("6. Finalização")
+        st.caption("“Salvar rascunho” guarda o registro em preenchimento. Ao finalizar, o registro passa a ser "
+                   "somente leitura e o PDF é gerado e guardado.")
+        if not st.session_state.get(confirm_key):
+            if st.button("Finalizar registro", key=f"qc_finalize_{rid}"):
+                st.session_state[confirm_key] = True
+                st.rerun()
+            return
+        st.warning(QC_FINALIZE_WARNING)
+        if dirty:
+            st.error("Existem alterações ainda não salvas. Clique em “Salvar rascunho” antes de finalizar.")
+        yes_col, no_col, _ = st.columns([2, 1, 3])
+        if yes_col.button("Sim, finalizar registro", type="primary", key=f"qc_finalize_yes_{rid}", disabled=dirty):
+            try:
+                api().finalize_quality_control(rid)
+            except ApiError as exc:
+                show_api_error(exc)
+                return
+            st.session_state.pop(confirm_key, None)
+            st.session_state["flash"] = "Registro finalizado. O PDF está disponível para impressão."
+            st.rerun()
+        if no_col.button("Cancelar", key=f"qc_finalize_no_{rid}"):
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
+
+
 # --- main --------------------------------------------------------------------
 
 install_app_metadata()
@@ -1162,5 +1449,7 @@ else:
         profile_view(st.session_state["patient_id"])
     elif nav == NAV_REGISTER:
         register_view()
+    elif nav == NAV_QC:
+        quality_control_view()
     else:
         search_view()

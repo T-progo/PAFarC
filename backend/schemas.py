@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -210,3 +211,71 @@ class ReferralIn(BaseModel):
     prm: str = Field(max_length=5000)
     suggested_conduct: str = Field(max_length=5000)
 
+
+# --- quality control (CIQ / CEQ) ---------------------------------------------------
+
+QCStatus = Literal["APPROVED", "REJECTED"]
+QCRootCause = Literal["EXPIRED", "STORAGE", "CALIBRATION", "DEFECTIVE_LOT", "OTHER"]
+QCPatientDecision = Literal["APPROVED_FOR_PATIENT_TESTING", "BLOCKED_UNTIL_TECHNICAL_MAINTENANCE"]
+
+
+class QualityControlIn(BaseModel):
+    """Content entered by the pharmacist (a draft may be incomplete). Execution time, responsible
+    professional and establishment are always set by the server, never taken from the request."""
+
+    control_type: Literal["CIQ", "CEQ"]
+    exam_analyte: str = Field(default="", max_length=200)
+    equipment_methodology: str = Field(default="", max_length=200)
+    provider_manufacturer: str = Field(default="", max_length=200)
+    control_lot: str = Field(default="", max_length=100)
+    control_expiry: str = Field(default="", max_length=10)  # MM/YYYY (surrounding spaces ignored)
+    value_found: str = Field(default="", max_length=50)
+    unit: str = Field(default="", max_length=50)
+    target_mean: str = Field(default="", max_length=50)
+    standard_deviation: str = Field(default="", max_length=50)
+    acceptable_range_min: str = Field(default="", max_length=50)
+    acceptable_range_max: str = Field(default="", max_length=50)
+    evaluation_status: QCStatus | None = None
+    nc_root_cause: QCRootCause | None = None
+    nc_root_cause_other: str = Field(default="", max_length=1000)
+    nc_corrective_action: str = Field(default="", max_length=4000)
+    nc_repeat_value: str = Field(default="", max_length=50)
+    nc_repeat_status: QCStatus | None = None
+    nc_patient_decision: QCPatientDecision | None = None
+
+
+class QualityControlSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    control_type: str
+    execution_at: datetime
+    exam_analyte: str | None
+    evaluation_status: str | None
+    pharmacist_id: int
+    responsible_name: str
+    responsible_crf: str
+    finalized_at: datetime | None
+
+
+class QualityControlOut(QualityControlSummary):
+    establishment_id: int
+    equipment_methodology: str | None
+    provider_manufacturer: str | None
+    control_lot: str | None
+    control_expiry: str = Field(validation_alias="control_expiry_display")
+    value_found: str | None
+    unit: str | None
+    target_mean: str | None
+    standard_deviation: str | None
+    acceptable_range_min: str | None
+    acceptable_range_max: str | None
+    nc_event_at: datetime | None
+    nc_root_cause: str | None
+    nc_root_cause_other: str | None
+    nc_corrective_action: str | None
+    nc_repeat_value: str | None
+    nc_repeat_status: str | None
+    nc_patient_decision: str | None
+    created_at: datetime
+    updated_at: datetime

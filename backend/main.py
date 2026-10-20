@@ -6,7 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from backend import admin, auth, consultations, documents, establishments, patients
+from backend import admin, auth, consultations, documents, establishments, patients, quality_control
 from backend.config import get_settings
 from backend.crypto import get_crypto
 from backend.database import get_sessionmaker, init_db
@@ -40,6 +40,7 @@ app.include_router(consultations.router)
 app.include_router(consultations.kit_router)
 app.include_router(documents.router)
 app.include_router(admin.router)
+app.include_router(quality_control.router)
 
 
 @app.exception_handler(RequestValidationError)

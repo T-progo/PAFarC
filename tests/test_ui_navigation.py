@@ -19,12 +19,12 @@ def _menu_for(user: dict) -> list[str]:
 
 def test_administrator_menu_shows_only_administration():
     options, at = _menu_for({"is_admin": True, "clinical_access": False})
-    assert options == ["Administração · Usuários", "Administração · Estabelecimentos"]
+    assert options == ["Administração · Usuários", "Administração · Estabelecimentos"]  # no Controle de Qualidade
     assert any(b.label == "Sair" for b in at.button)
     assert "search_query" not in [w.key for w in at.text_input]  # no patient search on the admin screen
 
 
 def test_pharmacist_menu_shows_only_clinical_pages():
     options, _ = _menu_for({"is_admin": False, "clinical_access": True})
-    assert options == ["Buscar paciente", "Cadastrar paciente"]
+    assert options == ["Buscar paciente", "Cadastrar paciente", "Controle de Qualidade"]
     assert not any(o.startswith("Administração") for o in options)

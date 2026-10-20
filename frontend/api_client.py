@@ -118,6 +118,25 @@ class PharmaTechAPI:
     def finalize_consultation(self, patient_id: int, consultation_id: int) -> dict:
         return self._request("POST", f"/patients/{patient_id}/consultations/{consultation_id}/finalize")
 
+    def list_quality_controls(self) -> list[dict]:
+        return self._request("GET", "/quality-controls")
+
+    def create_quality_control(self, data: dict) -> dict:
+        return self._request("POST", "/quality-controls", json=data)
+
+    def get_quality_control(self, record_id: int) -> dict:
+        return self._request("GET", f"/quality-controls/{record_id}")
+
+    def update_quality_control(self, record_id: int, data: dict) -> dict:
+        return self._request("PUT", f"/quality-controls/{record_id}", json=data)
+
+    def finalize_quality_control(self, record_id: int) -> dict:
+        return self._request("POST", f"/quality-controls/{record_id}/finalize")
+
+    def quality_control_pdf(self, record_id: int) -> bytes:
+        """The PDF stored when the record was finalized, exactly as issued."""
+        return self._request("GET", f"/quality-controls/{record_id}/pdf", raw=True).content
+
     def exam_kit_suggestion(self, exam_name: str) -> dict:
         """Last Fabricante/Lote/Validade this pharmacist used for the same exam (may be empty)."""
         return self._request("POST", "/exam-kit-suggestion", json={"exam_name": exam_name})
