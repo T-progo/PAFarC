@@ -15,10 +15,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from backend.auth import get_current_pharmacist, require_clinical
-from backend.consultations import _get_consultation, _get_editable_consultation, _get_patient
+from backend.consultations import _begin_write, _get_consultation, _get_editable_consultation, _get_patient
 from backend.database import get_db
-from backend.models import GeneratedDocument, Pharmacist
-from backend.establishments import NoEstablishmentError, document_header_for
+from backend.establishments import document_header
+from backend.models import Establishment, GeneratedDocument, Pharmacist
 from backend.pdf import DocumentContext, DocumentPDF, ResultRow, clean_text, format_date
 from backend.schemas import ExamRequestIn, PrescriptionIn, ReferralIn
 
@@ -130,13 +130,14 @@ def _issue(
     document_type: str,
     build: Callable[[DocumentContext], bytes],
 ) -> Response:
-    patient = _get_patient(db, patient_id)
+    _get_editable_consultation(db, patient_id, consultation_id, pharmacist)  # 404/403 before locking
+    _begin_write(db)
+    db.expire_all()  # re-check access (incl. the pharmacist's establishment) under the write lock
+    patient = _get_patient(db, patient_id, pharmacist)
     consultation = _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
-    try:
-        # Header = the authenticated pharmacist's own establishment (never from the request).
-        header = document_header_for(pharmacist)
-    except NoEstablishmentError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+    # Header = the establishment owning the consultation (never from the request); the pharmacist
+    # can only get here while linked to that same establishment.
+    header = document_header(db.get(Establishment, consultation.establishment_id))
     context = DocumentContext(
         establishment=header,
         patient_name=patient.full_name,
@@ -151,6 +152,7 @@ def _issue(
     db.add(GeneratedDocument(
         consultation_id=consultation.id,
         pharmacist_id=pharmacist.id,
+        establishment_id=consultation.establishment_id,
         document_type=document_type,
         pdf=pdf_bytes,
         pdf_size=len(pdf_bytes),
@@ -172,12 +174,13 @@ def _pdf_response(pdf_bytes: bytes, filename: str) -> Response:
 
 @router.get("/{document_id}", response_class=Response)
 def reprint_document(
-    patient_id: int, consultation_id: int, document_id: int, db: DB, _pharmacist: CurrentPharmacist
+    patient_id: int, consultation_id: int, document_id: int, db: DB, pharmacist: CurrentPharmacist
 ) -> Response:
-    """The stored PDF exactly as originally issued (any authenticated pharmacist)."""
-    consultation = _get_consultation(db, patient_id, consultation_id)
+    """The stored PDF exactly as originally issued (any pharmacist of the owning establishment)."""
+    consultation = _get_consultation(db, patient_id, consultation_id, pharmacist)
     document = db.get(GeneratedDocument, document_id)
-    if document is None or document.consultation_id != consultation.id:
+    if (document is None or document.consultation_id != consultation.id
+            or document.establishment_id != consultation.establishment_id):
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
     if document.pdf is None:
         raise HTTPException(

@@ -8,10 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.auth import require_clinical
+from backend.auth import get_current_pharmacist, require_clinical
 from backend.crypto import DecryptionError, get_crypto
 from backend.database import get_db
-from backend.models import Patient, PatientNameToken
+from backend.establishments import clinical_establishment_id
+from backend.models import Patient, PatientNameToken, Pharmacist
 from backend.schemas import PatientCreate, PatientOut, PatientSearch
 
 CPF_INDEX_PURPOSE = "patient.cpf"
@@ -71,7 +72,9 @@ def name_prefix_indexes(full_name: str) -> set[str]:
     }
 
 
-def create_patient(db: Session, *, full_name: str, date_of_birth: date, cpf: str) -> Patient:
+def create_patient(db: Session, *, establishment_id: int, full_name: str, date_of_birth: date, cpf: str) -> Patient:
+    """A new patient record of the given establishment (the caller's own, never from the request).
+    A CPF is unique within the establishment only; other establishments are never consulted."""
     full_name = clean_full_name(full_name)
     if not full_name:
         raise ValueError("Nome completo é obrigatório.")
@@ -81,10 +84,12 @@ def create_patient(db: Session, *, full_name: str, date_of_birth: date, cpf: str
 
     crypto = get_crypto()
     cpf_index = crypto.blind_index(CPF_INDEX_PURPOSE, cpf_digits)
-    if db.scalar(select(Patient.id).where(Patient.cpf_index == cpf_index)) is not None:
+    if db.scalar(select(Patient.id).where(Patient.establishment_id == establishment_id,
+                                          Patient.cpf_index == cpf_index)) is not None:
         raise DuplicateCPFError("Já existe um paciente cadastrado com este CPF.")
 
     patient = Patient(
+        establishment_id=establishment_id,
         full_name=full_name,
         full_name_index=crypto.blind_index(NAME_INDEX_PURPOSE, normalize_name(full_name)),
         date_of_birth=date_of_birth,
@@ -102,9 +107,10 @@ def create_patient(db: Session, *, full_name: str, date_of_birth: date, cpf: str
     return patient
 
 
-def search_patients(db: Session, query: str) -> list[Patient]:
-    """CPF (if the query has no letters): exact match. Name: every typed word (3+ letters)
-    must be the start of a word of the patient's name, case- and accent-insensitive."""
+def search_patients(db: Session, query: str, establishment_id: int) -> list[Patient]:
+    """Patients of the given establishment only. CPF (if the query has no letters): exact match.
+    Name: every typed word (3+ letters) must be the start of a word of the patient's name, case-
+    and accent-insensitive. Other establishments' records never enter the query or the limit."""
     crypto = get_crypto()
     if any(c.isalpha() for c in query):
         words = [w[:MAX_PREFIX] for w in name_words(query) if len(w) >= MIN_PREFIX]
@@ -113,7 +119,8 @@ def search_patients(db: Session, query: str) -> list[Patient]:
         digests = {crypto.blind_index(NAME_PREFIX_PURPOSE, w) for w in words}
         matching_ids = (
             select(PatientNameToken.patient_id)
-            .where(PatientNameToken.token_index.in_(digests))
+            .join(Patient, Patient.id == PatientNameToken.patient_id)
+            .where(Patient.establishment_id == establishment_id, PatientNameToken.token_index.in_(digests))
             .group_by(PatientNameToken.patient_id)
             .having(func.count(func.distinct(PatientNameToken.token_index)) == len(digests))
         )
@@ -121,8 +128,19 @@ def search_patients(db: Session, query: str) -> list[Patient]:
     else:
         cpf_digits = normalize_cpf(query)
         condition = Patient.cpf_index == crypto.blind_index(CPF_INDEX_PURPOSE, cpf_digits)
-    patients = db.scalars(select(Patient).where(condition).limit(SEARCH_LIMIT)).all()
+    patients = db.scalars(
+        select(Patient).where(Patient.establishment_id == establishment_id, condition).limit(SEARCH_LIMIT)
+    ).all()
     return sorted(patients, key=lambda p: normalize_name(p.full_name))
+
+
+def get_patient(db: Session, patient_id: int, pharmacist: Pharmacist) -> Patient:
+    """A patient of the pharmacist's current establishment; any other answers 404 (no leak)."""
+    patient = db.scalar(select(Patient).where(
+        Patient.id == patient_id, Patient.establishment_id == clinical_establishment_id(pharmacist)))
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paciente não encontrado.")
+    return patient
 
 
 def backfill_name_tokens(db: Session) -> int:
@@ -167,13 +185,18 @@ router = APIRouter(
 )
 
 
+CurrentPharmacist = Annotated[Pharmacist, Depends(get_current_pharmacist)]
+
+
 @router.post("", response_model=PatientOut, status_code=status.HTTP_201_CREATED)
 def create_patient_endpoint(
-    data: PatientCreate, db: Annotated[Session, Depends(get_db)]
+    data: PatientCreate, db: Annotated[Session, Depends(get_db)], pharmacist: CurrentPharmacist
 ) -> Patient:
+    establishment_id = clinical_establishment_id(pharmacist)
     try:
         return create_patient(
-            db, full_name=data.full_name, date_of_birth=data.date_of_birth, cpf=data.cpf
+            db, establishment_id=establishment_id, full_name=data.full_name,
+            date_of_birth=data.date_of_birth, cpf=data.cpf,
         )
     except DuplicateCPFError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None
@@ -184,17 +207,17 @@ def create_patient_endpoint(
 # POST rather than GET so CPFs and names never appear in URLs or access logs.
 @router.post("/search", response_model=list[PatientOut])
 def search_patients_endpoint(
-    data: PatientSearch, db: Annotated[Session, Depends(get_db)]
+    data: PatientSearch, db: Annotated[Session, Depends(get_db)], pharmacist: CurrentPharmacist
 ) -> list[Patient]:
+    establishment_id = clinical_establishment_id(pharmacist)
     try:
-        return search_patients(db, data.query)
+        return search_patients(db, data.query, establishment_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 @router.get("/{patient_id}", response_model=PatientOut)
-def get_patient_endpoint(patient_id: int, db: Annotated[Session, Depends(get_db)]) -> Patient:
-    patient = db.get(Patient, patient_id)
-    if patient is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paciente não encontrado.")
-    return patient
+def get_patient_endpoint(
+    patient_id: int, db: Annotated[Session, Depends(get_db)], pharmacist: CurrentPharmacist
+) -> Patient:
+    return get_patient(db, patient_id, pharmacist)

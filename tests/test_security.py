@@ -38,8 +38,11 @@ def test_successful_login_resets_failure_count(client, db):
 
 @pytest.fixture
 def stored_patient(db):
-    create_patient(db, full_name="Paciente Teste", date_of_birth=date(1970, 1, 1),
-                   cpf="12345678909")
+    from backend.establishments import create_establishment
+
+    establishment = create_establishment(db, name="Estabelecimento Teste")
+    create_patient(db, establishment_id=establishment.id, full_name="Paciente Teste",
+                   date_of_birth=date(1970, 1, 1), cpf="12345678909")
 
 
 @pytest.fixture

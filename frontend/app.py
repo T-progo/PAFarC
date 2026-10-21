@@ -138,6 +138,36 @@ def on_nav_change() -> None:
         close_patient()
 
 
+ESTABLISHMENT_CHANGED = ("Seu estabelecimento foi alterado pelo administrador. Agora são exibidos apenas os dados "
+                         "do estabelecimento atual.")
+TRANSFER_NOTICE = ("Alterar o estabelecimento modifica o acesso futuro do farmacêutico. Registros históricos "
+                   "permanecem vinculados ao estabelecimento onde foram gerados.")
+
+
+def clear_clinical_state() -> None:
+    """Forget everything shown from the previous establishment (open patient/consultation,
+    search results, QC record); the API refuses it anyway."""
+    close_patient()
+    st.session_state.pop("search_results", None)
+    st.session_state.pop("qc_id", None)
+
+
+def refresh_identity() -> None:
+    """Re-read the logged-in user on every run: an administrator may have moved them to another
+    establishment, which changes the clinical data they may see (enforced by the API)."""
+    try:
+        current = api().me()
+    except ApiError as exc:
+        if exc.status_code == 401:
+            logout("Sessão expirada. Entre novamente.")
+        return  # server unreachable: keep the session; every data request is checked anyway
+    previous = st.session_state.get("pharmacist") or {}
+    st.session_state["pharmacist"] = current
+    if previous.get("establishment_id") != current.get("establishment_id"):
+        clear_clinical_state()
+        st.session_state["establishment_changed"] = True
+
+
 def close_consultation() -> None:
     st.session_state.pop("consultation_id", None)
     st.session_state.pop("soap_saved", None)
@@ -339,6 +369,7 @@ def edit_user_panel(user: dict, gen: int, est_by_id: dict) -> None:
             est_index = est_ids.index(user["establishment_id"]) if user["establishment_id"] in est_ids else None
             est = st.selectbox("Estabelecimento", est_ids, index=est_index, placeholder="Selecione o estabelecimento",
                                format_func=lambda i: establishment_label(est_by_id[i]), key=f"ue_est_{uid}_{gen}")
+            st.caption(TRANSFER_NOTICE)
         login = st.text_input("Login / e-mail", value=user["login"], key=f"ue_login_{uid}_{gen}")
         save = st.form_submit_button("Salvar alterações", type="primary")
     if save:
@@ -628,7 +659,10 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
         patient = api().get_patient(patient_id)
         consultation = api().get_consultation(patient_id, consultation_id)
     except ApiError as exc:
-        close_consultation()
+        if exc.status_code == 404:  # e.g. no longer in this pharmacist's establishment
+            close_patient()
+        else:
+            close_consultation()
         show_api_error(exc)
         return
     pharmacist = consultation["pharmacist"]
@@ -1482,9 +1516,12 @@ install_app_metadata()
 if "token" not in st.session_state:
     login_view()
 else:
+    refresh_identity()
     sidebar()
     st.markdown(f"## {APP_NAME}")
     st.caption(ESTABLISHMENT)
+    if st.session_state.pop("establishment_changed", False):
+        st.warning(ESTABLISHMENT_CHANGED)
     user = st.session_state["pharmacist"]
     nav = st.session_state.get("nav")
     clinical = user.get("clinical_access", True)

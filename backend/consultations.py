@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 from backend.auth import get_current_pharmacist, require_clinical
 from backend.crypto import get_crypto
 from backend.database import get_db
+from backend.establishments import clinical_establishment_id
 from backend.models import Consultation, ExamResult, Patient, Pharmacist, SoapRecord
-from backend.patients import normalize_name
+from backend.patients import get_patient, normalize_name
 from backend.schemas import (
     ConsultationCreate,
     ConsultationOut,
@@ -28,9 +29,10 @@ EXAM_NAME_PURPOSE = "exam.name"
 CurrentPharmacist = Annotated[Pharmacist, Depends(get_current_pharmacist)]
 DB = Annotated[Session, Depends(get_db)]
 
-# Every route is nested under the patient, and every lookup checks that the
-# consultation (and exam) belongs to that patient, so records can never be
-# read or changed through another patient's context.
+# Every route is nested under the patient, and every lookup checks that the patient and the
+# consultation belong to the pharmacist's current establishment (else 404, revealing nothing)
+# and that the consultation (and exam) belongs to that patient, so records can never be read or
+# changed through another establishment's or patient's context.
 router = APIRouter(
     prefix="/patients/{patient_id}/consultations",
     tags=["consultations"],
@@ -38,16 +40,17 @@ router = APIRouter(
 )
 
 
-def _get_patient(db: Session, patient_id: int) -> Patient:
-    patient = db.get(Patient, patient_id)
-    if patient is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Paciente não encontrado.")
-    return patient
+def _get_patient(db: Session, patient_id: int, pharmacist: Pharmacist) -> Patient:
+    return get_patient(db, patient_id, pharmacist)
 
 
-def _get_consultation(db: Session, patient_id: int, consultation_id: int) -> Consultation:
-    consultation = db.get(Consultation, consultation_id)
-    if consultation is None or consultation.patient_id != patient_id:
+def _get_consultation(db: Session, patient_id: int, consultation_id: int, pharmacist: Pharmacist) -> Consultation:
+    """A consultation of that patient, in the pharmacist's current establishment (else 404)."""
+    patient = _get_patient(db, patient_id, pharmacist)
+    consultation = db.scalar(select(Consultation).where(
+        Consultation.id == consultation_id, Consultation.patient_id == patient.id,
+        Consultation.establishment_id == patient.establishment_id))
+    if consultation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Atendimento não encontrado.")
     return consultation
 
@@ -55,7 +58,7 @@ def _get_consultation(db: Session, patient_id: int, consultation_id: int) -> Con
 def _get_editable_consultation(
     db: Session, patient_id: int, consultation_id: int, pharmacist: Pharmacist
 ) -> Consultation:
-    consultation = _get_consultation(db, patient_id, consultation_id)
+    consultation = _get_consultation(db, patient_id, consultation_id, pharmacist)
     if consultation.pharmacist_id != pharmacist.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -78,9 +81,10 @@ def _get_mutable_consultation(
     db: Session, patient_id: int, consultation_id: int, pharmacist: Pharmacist
 ) -> Consultation:
     """The single check for changing a consultation's clinical content (SOAP, exam results) or
-    closing it: the responsible pharmacist, and only while the consultation is open. Access
-    (404/403) is checked first; the open/closed state is then re-checked under the write lock,
-    in the same transaction as the change, so a closing committed by another request is seen."""
+    closing it: same establishment, the responsible pharmacist, and only while the consultation is
+    open. Access (404/403) is checked first; everything (including the pharmacist's establishment)
+    is then re-checked under the write lock, in the same transaction as the change, so a closing
+    or a transfer committed by another request is seen."""
     _get_editable_consultation(db, patient_id, consultation_id, pharmacist)
     _begin_write(db)
     db.expire_all()  # re-read everything under the lock
@@ -93,11 +97,13 @@ def _get_mutable_consultation(
     return consultation
 
 
-def _close_other_consultations(db: Session, patient_id: int, keep_id: int, when: datetime) -> None:
-    """Close the patient's other open consultations (status only; updated_at is left as is)."""
+def _close_other_consultations(db: Session, patient: Patient, keep_id: int, when: datetime) -> None:
+    """Close the patient's other open consultations (status only; updated_at is left as is).
+    A patient record belongs to one establishment, so no other establishment is ever touched."""
     db.execute(
         update(Consultation)
-        .where(Consultation.patient_id == patient_id, Consultation.id != keep_id, Consultation.closed_at.is_(None))
+        .where(Consultation.patient_id == patient.id, Consultation.establishment_id == patient.establishment_id,
+               Consultation.id != keep_id, Consultation.closed_at.is_(None))
         .values(closed_at=when, updated_at=Consultation.updated_at)
         .execution_options(synchronize_session=False)
     )
@@ -162,29 +168,32 @@ def _touch(consultation: Consultation) -> None:
 def create_consultation(
     patient_id: int, data: ConsultationCreate, db: DB, pharmacist: CurrentPharmacist
 ) -> Consultation:
-    patient = _get_patient(db, patient_id)
+    patient = _get_patient(db, patient_id, pharmacist)
     consultation_date = data.consultation_date or date.today()
     if not patient.date_of_birth <= consultation_date <= date.today():
         raise HTTPException(status_code=422, detail="Data do atendimento inválida.")
-    consultation = Consultation(
-        patient_id=patient.id, pharmacist_id=pharmacist.id, consultation_date=consultation_date
-    )
     _begin_write(db)  # closing the previous one and creating this one commit together, serialized
+    db.expire_all()  # re-check the patient and the pharmacist's establishment under the lock
+    patient = _get_patient(db, patient_id, pharmacist)
+    consultation = Consultation(  # owned by the patient's (= the pharmacist's current) establishment
+        patient_id=patient.id, pharmacist_id=pharmacist.id, establishment_id=patient.establishment_id,
+        consultation_date=consultation_date,
+    )
     db.add(consultation)
     db.flush()
     # Starting a new consultation ends the patient's previous one(s): they become read-only.
-    _close_other_consultations(db, patient.id, consultation.id, datetime.now(timezone.utc))
+    _close_other_consultations(db, patient, consultation.id, datetime.now(timezone.utc))
     db.commit()
     db.refresh(consultation)
     return consultation
 
 
 @router.get("", response_model=list[ConsultationSummary])
-def list_consultations(patient_id: int, db: DB, _pharmacist: CurrentPharmacist) -> list[Consultation]:
-    _get_patient(db, patient_id)
+def list_consultations(patient_id: int, db: DB, pharmacist: CurrentPharmacist) -> list[Consultation]:
+    patient = _get_patient(db, patient_id, pharmacist)
     query = (
         select(Consultation)
-        .where(Consultation.patient_id == patient_id)
+        .where(Consultation.patient_id == patient.id, Consultation.establishment_id == patient.establishment_id)
         .order_by(
             Consultation.consultation_date.desc(),
             Consultation.created_at.desc(),
@@ -196,9 +205,9 @@ def list_consultations(patient_id: int, db: DB, _pharmacist: CurrentPharmacist) 
 
 @router.get("/{consultation_id}", response_model=ConsultationOut)
 def get_consultation(
-    patient_id: int, consultation_id: int, db: DB, _pharmacist: CurrentPharmacist
+    patient_id: int, consultation_id: int, db: DB, pharmacist: CurrentPharmacist
 ) -> Consultation:
-    return _get_consultation(db, patient_id, consultation_id)
+    return _get_consultation(db, patient_id, consultation_id, pharmacist)
 
 
 @router.post("/{consultation_id}/finalize", response_model=ConsultationOut)
@@ -226,14 +235,16 @@ def finalize_consultation(
 
 @router.get("/{consultation_id}/previous-exams", response_model=list[PreviousExamGroup])
 def previous_exams(
-    patient_id: int, consultation_id: int, db: DB, _pharmacist: CurrentPharmacist
+    patient_id: int, consultation_id: int, db: DB, pharmacist: CurrentPharmacist
 ) -> list[dict]:
-    """Exam results of this patient's earlier consultations, newest first (read-only)."""
-    current = _get_consultation(db, patient_id, consultation_id)
+    """Exam results of this patient record's earlier consultations (same establishment), newest
+    first (read-only)."""
+    current = _get_consultation(db, patient_id, consultation_id, pharmacist)
     current_key = (current.consultation_date, current.created_at, current.id)
     earlier = db.scalars(
         select(Consultation)
-        .where(Consultation.patient_id == patient_id, Consultation.id != current.id)
+        .where(Consultation.patient_id == current.patient_id, Consultation.establishment_id == current.establishment_id,
+               Consultation.id != current.id)
         .order_by(
             Consultation.consultation_date.desc(),
             Consultation.created_at.desc(),
@@ -312,7 +323,8 @@ def delete_exam_result(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# Kit suggestion: last test/kit identification the pharmacist used for the same exam.
+# Kit suggestion: last test/kit identification the pharmacist used for the same exam, in their
+# current establishment.
 kit_router = APIRouter(prefix="/exam-kit-suggestion", tags=["consultations"],
                        dependencies=[Depends(require_clinical)])
 
@@ -320,13 +332,17 @@ kit_router = APIRouter(prefix="/exam-kit-suggestion", tags=["consultations"],
 @kit_router.post("", response_model=ExamKit)
 def exam_kit_suggestion(data: ExamKitQuery, db: DB, pharmacist: CurrentPharmacist) -> ExamKit:
     """Fabricante/Lote/Validade of the most recently recorded result of the same exam, among
-    this pharmacist's own consultations, that has all three filled in. Only those three
-    values are returned (empty when there is none). POST so exam names stay out of URLs/logs."""
+    this pharmacist's own consultations in their current establishment (never another
+    establishment's, even their own from before a transfer), that has all three filled in. Only
+    those three values are returned (empty when there is none). POST so exam names stay out of
+    URLs/logs."""
+    establishment_id = clinical_establishment_id(pharmacist)
     latest = db.scalars(
         select(ExamResult)
         .join(Consultation, ExamResult.consultation_id == Consultation.id)
         .where(
             Consultation.pharmacist_id == pharmacist.id,
+            Consultation.establishment_id == establishment_id,
             ExamResult.exam_name_index == exam_name_index(data.exam_name),
             ExamResult.manufacturer.is_not(None),
             ExamResult.lot.is_not(None),

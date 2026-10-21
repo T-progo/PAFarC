@@ -1,5 +1,6 @@
 """Multiple establishments: migration, administration, pharmacist links and document headers.
-Clinical data is deliberately NOT separated by establishment."""
+Clinical data belongs to the establishment where it was created (complete isolation, see
+test_clinical_isolation*.py)."""
 import io
 
 import pytest
@@ -56,7 +57,7 @@ def two(client, admin):
 
 def _issue(client, headers, kind="prescription", extra=None):
     pid = client.post("/patients", json=PATIENT, headers=headers).json().get("id")
-    if pid is None:  # patient already registered by another pharmacist: shared data, find it
+    if pid is None:  # patient already registered in this establishment: find it
         pid = client.post("/patients/search", json={"query": PATIENT["cpf"]}, headers=headers).json()[0]["id"]
     cid = client.post(f"/patients/{pid}/consultations", json={}, headers=headers).json()["id"]
     payload = {**DOC_PAYLOADS[kind], **(extra or {})}
@@ -112,17 +113,24 @@ def test_migration_is_idempotent(client, db):
 
 
 def test_migration_leaves_clinical_records_untouched(client, db):
-    create_pharmacist(db, full_name="Farm", crf="CRF/RJ 1", login="farm", password=PASSWORD)
-    headers = _headers(client, "farm")
-    _, cid, response = _issue(client, headers)
-    assert response.status_code == 200
-    tables = ("patients", "consultations", "soap_records", "exam_results", "generated_documents", "patient_name_tokens")
-    with get_engine().connect() as c:
-        snapshot = {t: c.execute(text(f"SELECT * FROM {t} ORDER BY id")).all() for t in tables}
+    """A database from before establishments (and before clinical ownership): the establishment is
+    created from the configuration and owns every clinical record, whose content is untouched."""
+    from backend.database import init_db
+    from tests.test_clinical_isolation_migration import fill, make_legacy_layout, snapshot
+
+    farm = create_pharmacist(db, full_name="Farm", crf="CRF/RJ 1", login="farm", password=PASSWORD).id
+    make_legacy_layout()
+    fill({"p1": farm, "p2": farm})
+    before = snapshot()
     _reset_to_single_establishment_model(db)
-    migrate_legacy_establishment(db)
+    db.close()
+    init_db()
+    assert snapshot() == before
     with get_engine().connect() as c:
-        assert {t: c.execute(text(f"SELECT * FROM {t} ORDER BY id")).all() for t in tables} == snapshot
+        [(est,)] = c.execute(text("SELECT id FROM establishments")).all()
+        for table in ("patients", "consultations", "generated_documents"):
+            assert {r[0] for r in c.execute(text(f"SELECT establishment_id FROM {table}"))} == {est}, table
+        assert c.execute(text("SELECT establishment_id FROM pharmacists WHERE id = :i"), {"i": farm}).scalar() == est
 
 
 def test_old_database_layout_gets_establishment_column(client):
@@ -249,40 +257,51 @@ def test_establishment_change_affects_only_new_documents(client, admin, two, db)
     pid, cid, first = _issue(client, two["ha"])
     assert EST_A["name"] in pdf_text(first.content)
     doc_id = client.get(f"/patients/{pid}/consultations/{cid}", headers=two["ha"]).json()["documents"][0]["id"]
+    client.post("/admin/users", headers=admin, json={"full_name": "Colega A", "crf": "10003", "crf_uf": "RJ",
+                                                     "login": "colega.a@estab.test", "password": PASSWORD,
+                                                     "role": "pharmacist", "establishment_id": two["a"]})
+    colleague = _headers(client, "colega.a@estab.test")
     uid = db.scalar(select(Pharmacist.id).where(Pharmacist.login == "farm.a@estab.test"))
     client.patch(f"/admin/users/{uid}", headers=admin, json={"establishment_id": two["b"]})
     client.patch(f"/admin/establishments/{two['a']}", headers=admin, json={"name": "A Renomeada"})
 
-    _, _, new = _issue(client, two["ha"])
+    _, _, new = _issue(client, two["ha"])  # now in B: an independent record of the same person in B
     assert EST_B["name"] in pdf_text(new.content) and EST_A["name"] not in pdf_text(new.content)
-    reprint = client.get(f"/patients/{pid}/consultations/{cid}/documents/{doc_id}", headers=two["ha"])
-    assert reprint.content == first.content  # historical PDF byte-identical
+    url = f"/patients/{pid}/consultations/{cid}/documents/{doc_id}"
+    assert client.get(url, headers=two["ha"]).status_code == 404  # A's records stayed in A
+    assert client.get(url, headers=colleague).content == first.content  # historical PDF byte-identical
 
 
 def test_unlinked_pharmacist_cannot_issue_documents(client, two, db):
+    pid = client.post("/patients", json=PATIENT, headers=two["ha"]).json()["id"]
+    cid = client.post(f"/patients/{pid}/consultations", json={}, headers=two["ha"]).json()["id"]
     farm = db.scalar(select(Pharmacist).where(Pharmacist.login == "farm.a@estab.test"))
     farm.establishment_id = None  # e.g. an unexpected legacy state
     db.commit()
-    pid, cid, response = _issue(client, two["ha"])
+    response = client.post(f"/patients/{pid}/consultations/{cid}/documents/prescription",
+                           json=DOC_PAYLOADS["prescription"], headers=two["ha"])
     assert response.status_code == 409
     assert "estabelecimento" in response.json()["detail"]
-    assert client.get(f"/patients/{pid}/consultations/{cid}", headers=two["ha"]).json()["documents"] == []
+    with get_engine().connect() as c:
+        assert c.execute(text("SELECT count(*) FROM generated_documents")).scalar() == 0
 
 
-# --- no clinical separation by establishment (explicitly out of scope) -------------------------------------
+# --- clinical data is separated by establishment (client decision) ------------------------------------
 
-def test_clinical_data_is_shared_across_establishments(client, two):
+def test_clinical_data_is_not_shared_across_establishments(client, two):
     pid = client.post("/patients", json=PATIENT, headers=two["ha"]).json()["id"]
     cid = client.post(f"/patients/{pid}/consultations", json={}, headers=two["ha"]).json()["id"]
-    # a pharmacist of establishment B finds and reads establishment A's patient and consultation
-    assert [p["id"] for p in client.post("/patients/search", json={"query": "Paciente Ficticio"}, headers=two["hb"]).json()] == [pid]
-    assert client.get(f"/patients/{pid}/consultations/{cid}", headers=two["hb"]).status_code == 200
-    assert client.get(f"/patients/{pid}/consultations", headers=two["hb"]).json()[0]["id"] == cid
+    # a pharmacist of establishment B neither finds nor reads establishment A's patient and consultation
+    assert client.post("/patients/search", json={"query": "Paciente Ficticio"}, headers=two["hb"]).json() == []
+    assert client.get(f"/patients/{pid}/consultations/{cid}", headers=two["hb"]).status_code == 404
+    assert client.get(f"/patients/{pid}/consultations", headers=two["hb"]).status_code == 404
 
 
-def test_no_establishment_column_on_clinical_tables(client):
+def test_establishment_column_on_owning_clinical_tables_only(client):
     insp = inspect(get_engine())
-    for table in ("patients", "consultations", "soap_records", "exam_results", "generated_documents", "patient_name_tokens"):
+    for table in ("patients", "consultations", "generated_documents"):
+        assert "establishment_id" in {c["name"] for c in insp.get_columns(table)}, table
+    for table in ("soap_records", "exam_results", "patient_name_tokens"):  # inherit through their parent
         assert "establishment_id" not in {c["name"] for c in insp.get_columns(table)}, table
 
 

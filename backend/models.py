@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.crypto import EncryptedBinary, EncryptedDate, EncryptedString
@@ -59,7 +59,8 @@ class Pharmacist(Base):
     # UF of the CRF. Older accounts keep their original combined text in `crf`
     # (e.g. "CRF/RJ 16906"); new/edited accounts store only the number in `crf`.
     crf_uf: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    # Establishment printed on this pharmacist's new documents (administrators: none).
+    # Establishment whose clinical data and QC records the pharmacist currently works with
+    # (administrators: none). Changing it never moves records created before.
     establishment_id: Mapped[int | None] = mapped_column(ForeignKey("establishments.id"), nullable=True)
 
     establishment: Mapped["Establishment | None"] = relationship()
@@ -93,16 +94,21 @@ class Pharmacist(Base):
 
 class Patient(Base):
     """Personal data is encrypted at rest; *_index columns hold keyed HMAC
-    digests of the normalized values for exact-match search."""
+    digests of the normalized values for exact-match search. Each patient record belongs
+    permanently to one establishment (clinical data is not shared between establishments):
+    the same person attended in two establishments has two independent records, so a CPF is
+    unique per establishment only."""
 
     __tablename__ = "patients"
+    __table_args__ = (UniqueConstraint("establishment_id", "cpf_index", name="uq_patients_establishment_cpf"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    establishment_id: Mapped[int] = mapped_column(ForeignKey("establishments.id"), index=True)
     full_name: Mapped[str] = mapped_column("full_name_encrypted", EncryptedString)
     full_name_index: Mapped[str] = mapped_column(String(64), index=True)
     date_of_birth: Mapped[date] = mapped_column("date_of_birth_encrypted", EncryptedDate)
     cpf: Mapped[str] = mapped_column("cpf_encrypted", EncryptedString)
-    cpf_index: Mapped[str] = mapped_column(String(64), unique=True)
+    cpf_index: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -128,6 +134,9 @@ class Consultation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(ForeignKey("patients.id"), index=True)
     pharmacist_id: Mapped[int] = mapped_column(ForeignKey("pharmacists.id"), index=True)
+    # Establishment where the consultation took place (= its patient's); set at creation, never
+    # changed, even if the pharmacist is later moved. SOAP, exam results and documents inherit it.
+    establishment_id: Mapped[int] = mapped_column(ForeignKey("establishments.id"), index=True)
     consultation_date: Mapped[date] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -199,6 +208,8 @@ class GeneratedDocument(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     consultation_id: Mapped[int] = mapped_column(ForeignKey("consultations.id"), index=True)
     pharmacist_id: Mapped[int] = mapped_column(ForeignKey("pharmacists.id"))
+    # Establishment owning the document (= its consultation's, printed in its header); never changed.
+    establishment_id: Mapped[int] = mapped_column(ForeignKey("establishments.id"), index=True)
     document_type: Mapped[str] = mapped_column(String(30))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     # Null for documents issued before PDFs were stored (not reprintable).
@@ -213,9 +224,9 @@ class GeneratedDocument(Base):
 
 
 class Establishment(Base):
-    """An establishment managed by administrators. Each pharmacist is linked to one; it is
-    used for the header of that pharmacist's new documents (clinical data is not split by
-    establishment)."""
+    """An establishment managed by administrators. Each pharmacist is linked to one and works
+    only with that establishment's clinical data (patients, consultations, documents) and
+    quality-control records."""
 
     __tablename__ = "establishments"
 

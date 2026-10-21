@@ -1,10 +1,22 @@
 """The sidebar menu shown to each role (the API enforces the same rules separately)."""
 import os
+import sys
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).resolve().parent.parent / "frontend" / "app.py")
+sys.path.insert(0, str(Path(APP).parent))
+import api_client  # noqa: E402  (the same module app.py imports)
+
+
+@pytest.fixture(autouse=True)
+def _identity_unchanged(monkeypatch):
+    """The app re-reads the logged-in user on every run; here it answers with the session's own user."""
+    import streamlit as st
+
+    monkeypatch.setattr(api_client.PharmaTechAPI, "me", lambda self: dict(st.session_state["pharmacist"]))
 
 
 def _menu_for(user: dict) -> list[str]:

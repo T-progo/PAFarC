@@ -1,11 +1,13 @@
 """Establishments: managed by administrators; each pharmacist is linked to exactly one.
 
-Used only for user administration and the header of new documents. Patients,
-consultations and documents are NOT separated by establishment.
+A pharmacist works only with the clinical data (patients, consultations, documents) and
+quality-control records of the establishment they are currently linked to; those records
+belong permanently to the establishment where they were created.
 """
 
 import re
 
+from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -15,10 +17,6 @@ from backend.pdf import Establishment as DocumentEstablishment
 from backend.pdf import clean_text
 
 LEGACY_SETTINGS_ID = 1
-
-
-class NoEstablishmentError(ValueError):
-    """A pharmacist without an establishment cannot issue documents."""
 
 
 class DuplicateCNPJError(ValueError):
@@ -126,14 +124,18 @@ def establishment_for_new_pharmacist(db: Session, establishment_id: int | None) 
     raise ValueError("Selecione o estabelecimento do farmacêutico.")
 
 
-def document_header_for(pharmacist: Pharmacist) -> DocumentEstablishment:
-    """Header of a new document: the establishment linked to the authenticated pharmacist.
-    Never falls back to another establishment."""
-    establishment = pharmacist.establishment
-    if establishment is None:
-        raise NoEstablishmentError(
-            "Seu usuário não está vinculado a um estabelecimento. Procure o administrador."
-        )
+NO_ESTABLISHMENT = "Seu usuário não está vinculado a um estabelecimento. Procure o administrador."
+
+
+def clinical_establishment_id(pharmacist: Pharmacist) -> int:
+    """The establishment whose clinical data the pharmacist may work with: their current one."""
+    if pharmacist.establishment_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NO_ESTABLISHMENT)
+    return pharmacist.establishment_id
+
+
+def document_header(establishment: Establishment) -> DocumentEstablishment:
+    """Header of a new document: the establishment owning the consultation."""
     return DocumentEstablishment(
         name=establishment.name, cnpj=establishment.cnpj, address=establishment.address,
         phone=establishment.phone,

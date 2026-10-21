@@ -77,8 +77,9 @@ def test_historical_pdfs_reprint_unchanged(client, pharmacist, db):
     # a document issued before this change (old "Cidade - UF, long date" line) is stored as-is
     old_pdf = b"%PDF-1.3 legacy document with 'Rio de Janeiro - RJ, 5 de outubro de 2026.' %%EOF"
     pharmacist_id = client.get("/auth/me", headers=headers).json()["id"]
-    db.add(GeneratedDocument(consultation_id=cid, pharmacist_id=pharmacist_id, document_type="prescription",
-                             pdf=old_pdf, pdf_size=len(old_pdf)))
+    establishment_id = client.get("/auth/me", headers=headers).json()["establishment_id"]
+    db.add(GeneratedDocument(consultation_id=cid, pharmacist_id=pharmacist_id, establishment_id=establishment_id,
+                             document_type="prescription", pdf=old_pdf, pdf_size=len(old_pdf)))
     db.commit()
     docs = db.scalars(select(GeneratedDocument).where(GeneratedDocument.consultation_id == cid)
                       .order_by(GeneratedDocument.id)).all()

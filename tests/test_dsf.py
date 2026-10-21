@@ -96,8 +96,16 @@ def test_responsible_pharmacist_issues_dsf(client, env):
     assert 'filename="declaracao-servico-farmaceutico-atendimento-' in r.headers["content-disposition"]
 
 
+def _colleague_of_a(client, env):
+    client.post("/admin/users", headers=env["admin"], json={
+        "full_name": "Farmacêutica Colega DSF", "crf": "30003", "crf_uf": "RJ", "login": "a2@dsf.test",
+        "password": PASSWORD, "establishment_id": env["est_a"]})
+    return _headers(client, "a2@dsf.test")
+
+
 def test_other_pharmacist_cannot_issue_dsf_for_the_consultation(client, env):
-    assert _dsf(client, env, headers=env["b"]).status_code == 403
+    assert _dsf(client, env, headers=_colleague_of_a(client, env)).status_code == 403  # same establishment
+    assert _dsf(client, env, headers=env["b"]).status_code == 404  # another establishment: not even visible
 
 
 def test_administrator_gets_403(client, env):
@@ -257,7 +265,8 @@ def test_dsf_history_and_byte_identical_reprint_after_source_changes(client, env
     new_dsf = pdf_text(_dsf(client, env).content)
     assert "Glicemia ALTERADA" in new_dsf and "Nome NOVO" in new_dsf and "LOTE-NOVO" in new_dsf
 
-    reprint = client.get(f"{env['base']}/documents/{doc_id}", headers=env["b"])  # any pharmacist may reprint
+    assert client.get(f"{env['base']}/documents/{doc_id}", headers=env["b"]).status_code == 404  # other establishment
+    reprint = client.get(f"{env['base']}/documents/{doc_id}", headers=_colleague_of_a(client, env))  # same establishment
     assert reprint.status_code == 200 and hashlib.sha256(reprint.content).hexdigest() == digest
     assert 'filename="declaracao-servico-farmaceutico-atendimento-' in reprint.headers["content-disposition"]
     old = pdf_text(reprint.content)
@@ -266,10 +275,11 @@ def test_dsf_history_and_byte_identical_reprint_after_source_changes(client, env
     assert "Colesterol total" in old
 
 
-def test_dsf_follows_the_pharmacist_establishment_change(client, env):
-    client.patch(f"/admin/users/{env['a_id']}", headers=env["admin"], json={"establishment_id": env["est_b"]})
+def test_dsf_header_is_the_consultation_establishment_and_a_moved_pharmacist_loses_it(client, env):
     text = pdf_text(_dsf(client, env).content)
-    assert EST_B["name"] in text and EST_A["name"] not in text
+    assert EST_A["name"] in text and EST_B["name"] not in text
+    client.patch(f"/admin/users/{env['a_id']}", headers=env["admin"], json={"establishment_id": env["est_b"]})
+    assert _dsf(client, env).status_code == 404  # the consultation stays with establishment A
 
 
 # --- regression: the other three document types are unchanged ----------------------------

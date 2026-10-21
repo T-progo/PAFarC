@@ -23,6 +23,14 @@ EDIT_BUTTONS = {"Salvar rascunho", "Finalizar registro", "Cancelar lançamento"}
 RID = 7
 
 
+@pytest.fixture(autouse=True)
+def _identity_unchanged(monkeypatch):
+    """The app re-reads the logged-in user on every run; here it answers with the session's own user."""
+    import streamlit as st
+
+    monkeypatch.setattr(api_client.PharmaTechAPI, "me", lambda self: dict(st.session_state["pharmacist"]))
+
+
 def _record(**changes):
     record = {"id": RID, "control_type": "CIQ", "pharmacist_id": 1, "establishment_id": 1,
               "execution_at": "2026-10-20T09:00:00", "finalized_at": None, "cancelled_at": None,

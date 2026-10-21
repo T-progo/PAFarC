@@ -280,7 +280,11 @@ def test_reprint_requires_authentication_and_scope(client, setup):
 def test_legacy_document_without_stored_pdf_is_not_reprintable(client, db, setup):
     from backend.models import GeneratedDocument
 
-    db.add(GeneratedDocument(consultation_id=setup["cid"], pharmacist_id=1, document_type="referral"))
+    from backend.models import Consultation
+
+    establishment_id = db.get(Consultation, setup["cid"]).establishment_id
+    db.add(GeneratedDocument(consultation_id=setup["cid"], pharmacist_id=1, establishment_id=establishment_id,
+                             document_type="referral"))
     db.commit()
     [doc] = _issued(client, setup)
     assert doc["reprintable"] is False

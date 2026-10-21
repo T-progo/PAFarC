@@ -45,9 +45,15 @@ def get_db() -> Iterator[Session]:
 def init_db() -> None:
     import backend.models  # noqa: F401  (register models on Base.metadata)
 
+    from backend import clinical_isolation
+
     engine = get_engine()
     Base.metadata.create_all(engine)
     _add_missing_columns(engine)
+    # Establishment ownership of clinical data: one-time atomic migration of a legacy database
+    # (refuses to start, changing nothing, if any record cannot be assigned), then the guards.
+    clinical_isolation.migrate(engine)
+    clinical_isolation.install_guards(engine)
 
 
 # Columns added after the first release. create_all() creates new tables but does not
