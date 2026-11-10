@@ -13,7 +13,7 @@ from backend.crypto import DecryptionError, get_crypto
 from backend.database import get_db
 from backend.establishments import clinical_establishment_id
 from backend.models import Patient, PatientNameToken, Pharmacist
-from backend.schemas import PatientCreate, PatientOut, PatientSearch, PatientSummary
+from backend.schemas import PatientContactIn, PatientCreate, PatientOut, PatientSearch, PatientSummary
 
 CPF_INDEX_PURPOSE = "patient.cpf"
 NAME_INDEX_PURPOSE = "patient.full_name"
@@ -229,3 +229,23 @@ def get_patient_endpoint(
     patient_id: int, db: Annotated[Session, Depends(get_db)], pharmacist: CurrentPharmacist
 ) -> Patient:
     return get_patient(db, patient_id, pharmacist)
+
+
+@router.patch("/{patient_id}/contact", response_model=PatientOut)
+def update_patient_contact(
+    patient_id: int, data: PatientContactIn, db: Annotated[Session, Depends(get_db)], pharmacist: CurrentPharmacist
+) -> Patient:
+    """Phone and address only (any pharmacist of the patient's establishment). Access is checked,
+    then re-checked under the clinical write lock, so a transfer committed meanwhile is seen and no
+    update reaches the previous establishment. Unchanged values keep their stored ciphertext."""
+    from backend.consultations import _begin_write  # consultations imports this module
+
+    get_patient(db, patient_id, pharmacist)  # 404 before locking
+    _begin_write(db)
+    db.expire_all()
+    patient = get_patient(db, patient_id, pharmacist)
+    patient.phone = optional_text(data.phone)
+    patient.address = optional_text(data.address)
+    db.commit()
+    db.refresh(patient)
+    return patient

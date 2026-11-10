@@ -80,6 +80,16 @@ class PatientCreate(BaseModel):
     address: str = Field(default="", max_length=300)  # optional, kept as typed
 
 
+class PatientContactIn(BaseModel):
+    """The complete contact pair (both keys required, so an omitted key never clears a value by
+    accident); empty -> removed. Nothing else about the patient can be changed through it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str = Field(max_length=40)
+    address: str = Field(max_length=300)
+
+
 class PatientSearch(BaseModel):
     query: str = Field(min_length=1, max_length=200)
 

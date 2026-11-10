@@ -100,6 +100,7 @@ def all_routes(base, pid, exam_id, doc_id):
     """(method, url, json) of every clinical route for one record."""
     return [
         ("GET", f"/patients/{pid}", None),
+        ("PATCH", f"/patients/{pid}/contact", {"phone": "(21) 0000-0000", "address": "Rua Alheia, 1"}),
         ("GET", f"/patients/{pid}/consultations", None),
         ("POST", f"/patients/{pid}/consultations", {}),
         ("GET", base, None),
@@ -366,6 +367,7 @@ def test_database_guards_reject_ownership_changes(iso):
 
 AUDITED_CLINICAL_ROUTES = {  # all establishment-scoped; administrators 403; unauthenticated 401
     ("POST", "/patients"), ("POST", "/patients/search"), ("GET", "/patients/{patient_id}"),
+    ("PATCH", "/patients/{patient_id}/contact"),
     ("GET", "/patients/{patient_id}/consultations"), ("POST", "/patients/{patient_id}/consultations"),
     ("GET", "/patients/{patient_id}/consultations/{consultation_id}"),
     ("POST", "/patients/{patient_id}/consultations/{consultation_id}/finalize"),

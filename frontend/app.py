@@ -101,7 +101,15 @@ def open_patient(patient_id: int) -> None:
 
 def close_patient() -> None:
     st.session_state.pop("patient_id", None)
+    close_contact_edit()
     close_consultation()
+
+
+def close_contact_edit() -> None:
+    """Leave the contact editor; typed values are discarded (the form reopens with the stored ones)."""
+    st.session_state.pop("contact_edit", None)
+    for key in [k for k in st.session_state if str(k).startswith("contact_")]:
+        del st.session_state[key]
 
 
 def open_consultation(consultation_id: int) -> None:
@@ -593,12 +601,44 @@ def profile_view(patient_id: int) -> None:
             field("Data de nascimento", format_date(patient["date_of_birth"]))
         with col3:
             field("CPF", format_cpf(patient["cpf"]))
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            field("Telefone", patient.get("phone") or "—")
-        with col2:
-            field("Endereço", patient.get("address") or "—")
+        if st.session_state.get("contact_edit") == patient_id:
+            contact_editor(patient)
+        else:
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                field("Telefone", patient.get("phone") or "—")
+            with col2:
+                field("Endereço", patient.get("address") or "—")
+            if st.button("Editar contato", key="contact_edit_open"):
+                st.session_state["contact_edit"] = patient_id
+                st.rerun()
     consultations_section(patient_id)
+
+
+def contact_editor(patient: dict) -> None:
+    """Telefone/Endereço only; the other personal data cannot be changed here."""
+    with st.form(f"contact_form_{patient['id']}"):
+        phone = st.text_input("Telefone (opcional)", value=patient.get("phone") or "", max_chars=40,
+                              placeholder="(00) 00000-0000", key=f"contact_{patient['id']}_phone")
+        address = st.text_input("Endereço (opcional)", value=patient.get("address") or "", max_chars=300,
+                                key=f"contact_{patient['id']}_address")
+        save_col, cancel_col, _ = st.columns([1, 1, 3])
+        save = save_col.form_submit_button("Salvar", type="primary")
+        cancel = cancel_col.form_submit_button("Cancelar")
+    if cancel:
+        close_contact_edit()
+        st.rerun()
+    if save:
+        try:
+            api().update_patient_contact(patient["id"], phone, address)
+        except ApiError as exc:
+            if exc.status_code == 404:  # e.g. no longer in this pharmacist's establishment
+                close_patient()
+            show_api_error(exc)  # typed values stay in the form otherwise
+            return
+        close_contact_edit()
+        st.session_state["flash"] = "Contato atualizado."
+        st.rerun()
 
 
 def consultations_section(patient_id: int) -> None:

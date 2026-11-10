@@ -59,6 +59,9 @@ class PharmaTechAPI:
     def get_patient(self, patient_id: int) -> dict:
         return self._request("GET", f"/patients/{patient_id}")
 
+    def update_patient_contact(self, patient_id: int, phone: str, address: str) -> dict:
+        return self._request("PATCH", f"/patients/{patient_id}/contact", json={"phone": phone, "address": address})
+
     # --- administration (administrators only; the API enforces it) ---------------------
 
     def list_users(self) -> list[dict]:
