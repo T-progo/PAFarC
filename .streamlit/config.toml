@@ -1,10 +1,32 @@
 [theme]
+# Graphite clinical theme (UI redesign, Phase 1). Bundled sans-serif font: no external font requests.
 base = "dark"
-primaryColor = "#D4B98C"
-backgroundColor = "#2B2622"
-secondaryBackgroundColor = "#3A332D"
-textColor = "#F3ECE2"
+primaryColor = "#6CA6DE"
+backgroundColor = "#121417"
+secondaryBackgroundColor = "#1E2227"
+textColor = "#E6E8EB"
+borderColor = "#2E343B"
+showWidgetBorder = true
 font = "sans serif"
+baseFontSize = 14
+baseRadius = "6px"
+buttonRadius = "6px"
+headingFontSizes = ["22px", "20px", "17px", "15px", "14px", "13px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+dataframeHeaderBackgroundColor = "#1E2227"
+dataframeBorderColor = "#2E343B"
+linkColor = "#6CA6DE"
+# Semantic colours (status badges, st.success/warning/error, :color[] text)
+blueColor = "#6CA6DE"
+greenColor = "#4FBF85"
+orangeColor = "#E3A443"
+redColor = "#EC7A6C"
+grayColor = "#8B939C"
+
+[theme.sidebar]
+backgroundColor = "#0E1013"
+secondaryBackgroundColor = "#1A1D21"
+borderColor = "#2E343B"
 
 [client]
 toolbarMode = "minimal"

@@ -29,14 +29,24 @@ def _menu_for(user: dict) -> list[str]:
     return list(at.radio(key="nav").options), at
 
 
+ADMIN_VALUES = ["Administração · Usuários", "Administração · Estabelecimentos"]
+
+
 def test_administrator_menu_shows_only_administration():
     options, at = _menu_for({"is_admin": True, "clinical_access": False})
-    assert options == ["Administração · Usuários", "Administração · Estabelecimentos"]  # no Controle de Qualidade
+    # shown under the "Administração" caption without the prefix; the option values are unchanged
+    assert options == ["Usuários", "Estabelecimentos"]  # no Controle de Qualidade
+    nav = at.radio(key="nav")
+    assert nav.label == "Administração" and [nav.format_func(v) for v in ADMIN_VALUES] == options
     assert any(b.label == "Sair" for b in at.button)
     assert "search_query" not in [w.key for w in at.text_input]  # no patient search on the admin screen
+    nav.set_value(ADMIN_VALUES[1]).run()
+    assert not at.exception and at.session_state["nav"] == ADMIN_VALUES[1]
+    assert "Estabelecimentos" in " ".join(str(m.value) for m in at.markdown)  # page header of that screen
 
 
 def test_pharmacist_menu_shows_only_clinical_pages():
-    options, _ = _menu_for({"is_admin": False, "clinical_access": True})
+    options, at = _menu_for({"is_admin": False, "clinical_access": True})
     assert options == ["Buscar paciente", "Cadastrar paciente", "Controle de Qualidade"]
     assert not any(o.startswith("Administração") for o in options)
+    assert at.radio(key="nav").label == "Clínico"

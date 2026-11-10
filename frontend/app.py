@@ -3,7 +3,6 @@
     streamlit run frontend/app.py
 """
 
-import html
 import re
 import sys
 from datetime import date, datetime, timezone
@@ -14,6 +13,10 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_client import ApiError, PharmaTechAPI  # noqa: E402
 from exam_kit import EMPTY_KIT, EXAM_FORM_FIELDS, exam_form_has_input, kit_from_api, merge_kit_suggestion  # noqa: E402
+from ui import (  # noqa: E402
+    account_status, apply_ui, badge_md, consultation_status, empty_state, field, identity_html, page_header,
+    qc_evaluation_status, qc_lifecycle_status, status_badge,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 PHARMATECH_LOGO = ROOT / "IMG_1485.jpeg"
@@ -32,25 +35,7 @@ UFS = ("AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "
        "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO")
 
 st.set_page_config(page_title=f"{APP_NAME} · PAFarC", page_icon=str(PHARMATECH_LOGO), layout="wide")
-
-st.markdown(
-    """
-    <style>
-    h1, h2, h3 { color: #F7EFE3; letter-spacing: 0.02em; }
-    [data-testid="stSidebar"] { border-right: 1px solid #4A4138; }
-    [data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] { border-color: #554A40; }
-    .pt-label { color: #BBAE9E; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
-    .pt-value { color: #F3ECE2; font-size: 1.15rem; margin-bottom: 0.8rem; }
-    .pt-muted { color: #BBAE9E; }
-    /* Dark text on the champagne primary buttons (white-on-silver was unreadable). */
-    button[kind^="primary"], button[kind^="primary"] p { color: #2B2622 !important; font-weight: 600; }
-    /* "Cancelar lançamento": secondary button with a muted danger outline. */
-    .st-key-qc_cancel_actions button, .st-key-qc_cancel_confirm_actions button { border-color: #9E4A3A; }
-    .st-key-qc_cancel_actions button p, .st-key-qc_cancel_confirm_actions button p { color: #E39A88; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+apply_ui()
 
 
 # --- helpers -----------------------------------------------------------------
@@ -185,14 +170,6 @@ def close_consultation() -> None:
         del st.session_state[key]
 
 
-def field(label: str, value: str) -> None:
-    st.markdown(
-        f'<div class="pt-label">{html.escape(label)}</div>'
-        f'<div class="pt-value">{html.escape(value)}</div>',
-        unsafe_allow_html=True,
-    )
-
-
 def unsaved_page_guard(active: bool) -> None:
     """Ask the browser to confirm before closing/reloading the tab while SOAP has unsaved text."""
     flag = "true" if active else "false"
@@ -214,7 +191,7 @@ def install_app_metadata() -> None:
         "function add(tag, attrs) {var e = document.createElement(tag);"
         "for (var k in attrs) e.setAttribute(k, attrs[k]); h.appendChild(e);}"
         "add('link', {rel: 'manifest', href: 'app/static/manifest.json'});"
-        "add('meta', {name: 'theme-color', content: '#2B2622'});"
+        "add('meta', {name: 'theme-color', content: '#121417'});"
         "add('meta', {name: 'mobile-web-app-capable', content: 'yes'});"
         "add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});"
         "add('meta', {name: 'apple-mobile-web-app-title', content: 'PharmaTech'});"
@@ -261,11 +238,16 @@ def sidebar() -> None:
     pharmacist = st.session_state["pharmacist"]
     if st.session_state.pop("reset_nav", False):
         st.session_state["nav"] = None
+    options = menu_options()
+    # Section caption: administrators only ever see the administration items (strict role separation).
+    section = "Administração" if options and all(o in ADMIN_NAV for o in options) else "Clínico"
     with st.sidebar:
-        st.image(str(PAFARC_LOGO), width="stretch")
-        st.markdown(f"**{md(pharmacist['full_name'])}**  \n{md(pharmacist['crf'])}")
+        st.image(str(PAFARC_LOGO), width=120)
+        st.markdown(f'<div class="pt-brand">{APP_NAME} · PAFarC</div>', unsafe_allow_html=True)
+        st.markdown(identity_html(pharmacist), unsafe_allow_html=True)
         st.divider()
-        st.radio("Menu", menu_options(), key="nav", on_change=on_nav_change)
+        # Same widget, key and option values as before; only the shown label of the admin items is shorter.
+        st.radio(section, options, key="nav", on_change=on_nav_change, format_func=nav_label)
         st.divider()
         if st.button("Sair", key="logout", width="stretch"):
             if may_leave_consultation():
@@ -283,6 +265,11 @@ def menu_options() -> list[str]:
     return options
 
 
+def nav_label(option: str) -> str:
+    """Menu text: the administration items appear under the "Administração" caption without the prefix."""
+    return option.removeprefix("Administração · ")
+
+
 def bump_admin_forms() -> None:
     """New widget keys after a successful change, so the browser shows fresh forms."""
     st.session_state["admin_gen"] = st.session_state.get("admin_gen", 0) + 1
@@ -293,7 +280,7 @@ def establishment_label(est: dict) -> str:
 
 
 def users_view() -> None:
-    st.header("Usuários")
+    page_header("Usuários", eyebrow="Administração")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     try:
@@ -411,7 +398,7 @@ def edit_user_panel(user: dict, gen: int, est_by_id: dict) -> None:
 
     status_col, password_col = st.columns(2)
     with status_col:
-        st.markdown(f"**Situação:** {'Ativo' if user['active'] else 'Bloqueado'}")
+        st.markdown(f"**Situação:** {badge_md(account_status(user))}")
         if is_self:
             st.caption("Você não pode bloquear o seu próprio usuário.")
         else:
@@ -445,7 +432,7 @@ def edit_user_panel(user: dict, gen: int, est_by_id: dict) -> None:
 
 
 def establishments_view() -> None:
-    st.header("Estabelecimentos")
+    page_header("Estabelecimentos", eyebrow="Administração")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     try:
@@ -515,7 +502,7 @@ def establishments_view() -> None:
 
 
 def search_view() -> None:
-    st.header("Buscar paciente")
+    page_header("Buscar paciente", eyebrow="Clínico")
     with st.form("search_form"):
         query = st.text_input("Nome ou CPF", key="search_query")
         submitted = st.form_submit_button("Buscar", type="primary")
@@ -538,7 +525,7 @@ def search_view() -> None:
     if results is None:
         return
     if not results:
-        st.info("Nenhum paciente encontrado.")
+        empty_state("Nenhum paciente encontrado", "Confira o nome digitado ou informe o CPF completo.")
         return
     st.markdown(f"**{len(results)} paciente(s) encontrado(s)**")
     for patient in results:
@@ -552,7 +539,7 @@ def search_view() -> None:
 
 
 def register_view() -> None:
-    st.header("Cadastrar paciente")
+    page_header("Cadastrar paciente", eyebrow="Clínico")
     with st.form("register_form"):
         full_name = st.text_input("Nome completo", key="reg_name")
         date_of_birth = st.date_input(
@@ -591,7 +578,7 @@ def profile_view(patient_id: int) -> None:
     st.button("← Voltar", key="back", on_click=close_patient)
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
-    st.header(md(patient["full_name"]))
+    page_header(patient["full_name"], eyebrow="Paciente")
     with st.container(border=True):
         st.subheader("Dados do paciente")
         col1, col2, col3 = st.columns(3)
@@ -660,15 +647,14 @@ def consultations_section(patient_id: int) -> None:
             show_api_error(exc)
             return
         if not history:
-            st.markdown('<p class="pt-muted">Nenhum atendimento registrado.</p>', unsafe_allow_html=True)
+            empty_state("Nenhum atendimento registrado", "Use “Novo atendimento” para iniciar o primeiro.")
             return
         for consultation in history:
             pharmacist = consultation["pharmacist"]
             left, right = st.columns([5, 1])
-            state = "Encerrado" if consultation["closed_at"] else "Em andamento"
             left.markdown(
                 f"**{format_date(consultation['consultation_date'])}** · "
-                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])} · {state}"
+                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])} · {badge_md(consultation_status(consultation))}"
             )
             right.button(
                 "Abrir",
@@ -725,7 +711,8 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
             "Há alterações não salvas no SOAP. Clique em “Salvar SOAP” para mantê-las, "
             "ou repita a ação (Voltar, menu ou Sair) para descartá-las."
         )
-    st.header(f"Atendimento de {format_date(consultation['consultation_date'])}")
+    page_header(f"Atendimento de {format_date(consultation['consultation_date'])}", eyebrow="Atendimento",
+                status=consultation_status(consultation))
     with st.container(border=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -854,7 +841,7 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
         if exams:
             st.dataframe(exam_table_rows(exams), hide_index=True, width="stretch")
         else:
-            st.markdown('<p class="pt-muted">Nenhum resultado registrado.</p>', unsafe_allow_html=True)
+            empty_state("Nenhum resultado registrado")
         if not editable:
             return
 
@@ -895,7 +882,7 @@ def previous_exams_section(patient_id: int, cid: int) -> None:
     with st.container(border=True):
         st.subheader("Exames anteriores")
         if not groups:
-            st.markdown('<p class="pt-muted">Nenhum exame em atendimentos anteriores.</p>', unsafe_allow_html=True)
+            empty_state("Nenhum exame em atendimentos anteriores")
             return
         st.caption("Somente leitura: resultados registrados em atendimentos anteriores deste paciente.")
         for index, group in enumerate(groups):
@@ -1084,7 +1071,7 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
                     right.caption("Não disponível")
         if not editable:
             if not issued:
-                st.markdown('<p class="pt-muted">Nenhum documento emitido.</p>', unsafe_allow_html=True)
+                empty_state("Nenhum documento emitido")
             return
 
         kind = st.radio(
@@ -1260,12 +1247,6 @@ def qc_datetime(iso: str | None) -> str:
     return format_timestamp(iso).replace(" ", " - ", 1) if iso else "—"
 
 
-def qc_state_label(record: dict) -> str:
-    if record.get("cancelled_at"):
-        return "Cancelado"
-    return "Finalizado" if record["finalized_at"] else "Em preenchimento"
-
-
 def qc_payload(record: dict) -> dict:
     """The record's saved content in the form/request shape."""
     payload = {"control_type": record["control_type"]}
@@ -1301,7 +1282,7 @@ def close_quality_control() -> None:
 
 
 def quality_control_view() -> None:
-    st.header("Controle de Qualidade")
+    page_header("Controle de Qualidade", eyebrow="Qualidade")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     if "qc_id" in st.session_state:
@@ -1333,15 +1314,14 @@ def qc_history() -> None:
         show_api_error(exc)
         return
     if not records:
-        st.markdown('<p class="pt-muted">Nenhum registro de controle de qualidade.</p>', unsafe_allow_html=True)
+        empty_state("Nenhum registro de controle de qualidade", "Use “Novo registro” para iniciar um CIQ ou CEQ.")
         return
     for record in records:
         left, right = st.columns([5, 1])
-        status = QC_STATUS_LABELS.get(record["evaluation_status"], "Status não informado")
         left.markdown(
             f"**{qc_datetime(record['execution_at'])}** · {record['control_type']} · "
-            f"{md(record['exam_analyte'] or '—')} · {status} · {md(record['responsible_name'])} · "
-            f"{qc_state_label(record)}"
+            f"{md(record['exam_analyte'] or '—')} · {badge_md(qc_evaluation_status(record))} · "
+            f"{md(record['responsible_name'])} · {badge_md(qc_lifecycle_status(record))}"
         )
         right.button("Abrir", key=f"qc_open_{record['id']}", on_click=open_quality_control, args=(record["id"],))
 
@@ -1363,7 +1343,8 @@ def qc_record_view(rid: int) -> None:
         with col2:
             field("Responsável", f"{record['responsible_name']} · {record['responsible_crf']}")
         with col3:
-            field("Situação", qc_state_label(record))
+            st.markdown('<div class="pt-label">Situação</div>', unsafe_allow_html=True)
+            status_badge(qc_lifecycle_status(record))
     if not editable:
         if record.get("cancelled_at"):
             st.warning(QC_CANCELLED_NOTICE)
@@ -1565,8 +1546,6 @@ if "token" not in st.session_state:
 else:
     refresh_identity()
     sidebar()
-    st.markdown(f"## {APP_NAME}")
-    st.caption(ESTABLISHMENT)
     if st.session_state.pop("establishment_changed", False):
         st.warning(ESTABLISHMENT_CHANGED)
     user = st.session_state["pharmacist"]
