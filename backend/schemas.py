@@ -84,17 +84,24 @@ class PatientSearch(BaseModel):
     query: str = Field(min_length=1, max_length=200)
 
 
-class PatientOut(BaseModel):
+class PatientSummary(BaseModel):
+    """A patient in search results: identification only (no contact data)."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     full_name: str
     date_of_birth: date
     cpf: str
-    phone: str | None
-    address: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class PatientOut(PatientSummary):
+    """A patient record as registered/opened, including the optional contact data."""
+
+    phone: str | None
+    address: str | None
 
 
 SOAP_SECTION_MAX = 20000

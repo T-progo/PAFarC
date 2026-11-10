@@ -13,7 +13,7 @@ from backend.crypto import DecryptionError, get_crypto
 from backend.database import get_db
 from backend.establishments import clinical_establishment_id
 from backend.models import Patient, PatientNameToken, Pharmacist
-from backend.schemas import PatientCreate, PatientOut, PatientSearch
+from backend.schemas import PatientCreate, PatientOut, PatientSearch, PatientSummary
 
 CPF_INDEX_PURPOSE = "patient.cpf"
 NAME_INDEX_PURPOSE = "patient.full_name"
@@ -213,7 +213,7 @@ def create_patient_endpoint(
 
 
 # POST rather than GET so CPFs and names never appear in URLs or access logs.
-@router.post("/search", response_model=list[PatientOut])
+@router.post("/search", response_model=list[PatientSummary])
 def search_patients_endpoint(
     data: PatientSearch, db: Annotated[Session, Depends(get_db)], pharmacist: CurrentPharmacist
 ) -> list[Patient]:

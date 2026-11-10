@@ -79,6 +79,22 @@ def test_cpf_rules_unchanged(iso):  # noqa: F811
     assert c.get(f"/patients/{a['id']}", headers=iso["a1"]).json()["address"] is None
 
 
+def test_search_results_never_carry_contact_data(iso):  # noqa: F811
+    c = iso["c"]
+    created = create(iso, iso["a1"], phone=PHONE, address=ADDRESS)
+    assert (created["phone"], created["address"]) == (PHONE, ADDRESS)  # registration response keeps them
+    detail = c.get(f"/patients/{created['id']}", headers=iso["a1"]).json()
+    assert (detail["phone"], detail["address"]) == (PHONE, ADDRESS)  # and so does the patient record
+    for query in (CPF, "contato", "PACIENTE exemplo"):
+        found = c.post("/patients/search", headers=iso["a1"], json={"query": query}).json()
+        assert [p["id"] for p in found] == [created["id"]], query
+        assert set(found[0]) == {"id", "full_name", "date_of_birth", "cpf", "created_at", "updated_at"}, query
+        assert PHONE not in str(found) and "Flores" not in str(found)
+    assert c.post("/patients/search", headers=iso["b1"], json={"query": CPF}).json() == []  # isolation unchanged
+    assert c.post("/patients/search", headers=iso["admin"], json={"query": CPF}).status_code == 403
+    assert c.post("/patients/search", json={"query": CPF}).status_code == 401
+
+
 def test_contact_is_not_searchable_and_tokens_unchanged(iso):  # noqa: F811
     c = iso["c"]
     pid = create(iso, iso["a1"], phone=PHONE, address=ADDRESS)["id"]
