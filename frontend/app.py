@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_client import ApiError, PharmaTechAPI  # noqa: E402
 from exam_kit import EMPTY_KIT, EXAM_FORM_FIELDS, exam_form_has_input, kit_from_api, merge_kit_suggestion  # noqa: E402
 from ui import (  # noqa: E402
-    account_status, apply_ui, badge_md, consultation_status, empty_state, field, identity_html, page_header,
-    qc_evaluation_status, qc_lifecycle_status, status_badge,
+    account_status, apply_ui, badge_md, banner_title_html, birth_label, consultation_status, empty_state, field,
+    format_cpf_full, identity_html, kv_html, mask_cpf_last2, meta_html, page_header, qc_evaluation_status,
+    qc_lifecycle_status, section_label_html, status_badge,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,10 +53,6 @@ def md(text: str) -> str:
     return _MARKDOWN_SPECIAL.sub(r"\\\1", str(text))
 
 
-def format_cpf(digits: str) -> str:
-    return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
-
-
 def mask_cpf(digits: str) -> str:
     return f"***.{digits[3:6]}.{digits[6:9]}-**"
 
@@ -78,6 +75,7 @@ def show_api_error(exc: ApiError) -> None:
 
 
 def open_patient(patient_id: int) -> None:
+    forget_cpf_reveals()  # a newly opened patient always starts with the CPF masked
     st.session_state["patient_id"] = patient_id
     # Clear the menu selection so both menu items respond to a click while a
     # patient is open (a radio only reacts when its selection changes).
@@ -86,8 +84,32 @@ def open_patient(patient_id: int) -> None:
 
 def close_patient() -> None:
     st.session_state.pop("patient_id", None)
+    forget_cpf_reveals()
     close_contact_edit()
     close_consultation()
+
+
+def cpf_reveal_key(patient_id: int) -> str:
+    return f"cpf_revealed_{patient_id}"
+
+
+def cpf_revealed(patient_id: int) -> bool:
+    return bool(st.session_state.get(cpf_reveal_key(patient_id), False))
+
+
+def toggle_cpf(patient_id: int) -> None:
+    """Mostrar / Ocultar CPF: session-only display state for this patient (no request, nothing stored)."""
+    st.session_state[cpf_reveal_key(patient_id)] = not cpf_revealed(patient_id)
+
+
+def forget_cpf_reveals() -> None:
+    for key in [k for k in st.session_state if str(k).startswith("cpf_revealed_")]:
+        del st.session_state[key]
+
+
+def go_register() -> None:
+    """Existing menu entry "Cadastrar paciente" (same navigation value as the sidebar)."""
+    st.session_state["nav"] = NAV_REGISTER
 
 
 def close_contact_edit() -> None:
@@ -502,14 +524,17 @@ def establishments_view() -> None:
 
 
 def search_view() -> None:
-    page_header("Buscar paciente", eyebrow="Clínico")
+    head, action = st.columns([4, 1], vertical_alignment="bottom")
+    with head:
+        page_header("Pacientes", eyebrow="Clínico")
+    action.button("Novo paciente", key="search_new_patient", on_click=go_register, width="stretch")
     with st.form("search_form"):
-        query = st.text_input("Nome ou CPF", key="search_query")
-        submitted = st.form_submit_button("Buscar", type="primary")
-    st.caption(
-        "Digite o nome (ou o início de cada nome, com pelo menos 3 letras — ex.: \"maria sant\") "
-        "ou o CPF completo. Maiúsculas e acentos não fazem diferença."
-    )
+        field_col, button_col = st.columns([5, 1], vertical_alignment="bottom")
+        query = field_col.text_input(
+            "Nome ou CPF", key="search_query", placeholder="Nome (ex.: maria sant) ou CPF completo",
+            help="Digite o nome (ou o início de cada nome, com pelo menos 3 letras — ex.: “maria sant”) "
+                 "ou o CPF completo. Maiúsculas e acentos não fazem diferença.")
+        submitted = button_col.form_submit_button("Buscar", type="primary", width="stretch")
     if submitted:
         if not query.strip():
             st.warning("Informe o nome completo ou o CPF.")
@@ -526,23 +551,29 @@ def search_view() -> None:
         return
     if not results:
         empty_state("Nenhum paciente encontrado", "Confira o nome digitado ou informe o CPF completo.")
+        st.button("Cadastrar novo paciente", key="empty_new_patient", on_click=go_register)
         return
-    st.markdown(f"**{len(results)} paciente(s) encontrado(s)**")
-    for patient in results:
-        with st.container(border=True):
-            left, right = st.columns([5, 1])
+    count = len(results)
+    st.caption(f"{count} paciente encontrado" if count == 1 else f"{count} pacientes encontrados")
+    today = date.today()
+    for patient in results:  # PatientSummary only: no phone/address in search results
+        with st.container(key=f"prow_{patient['id']}"):
+            left, right = st.columns([5, 1], vertical_alignment="center")
             left.markdown(
                 f"**{md(patient['full_name'])}**  \n"
-                f"Nascimento: {format_date(patient['date_of_birth'])} · CPF: {md(mask_cpf(patient['cpf']))}"
+                f":gray[{md(birth_label(patient['date_of_birth'], today))} · CPF {md(mask_cpf(patient['cpf']))}]"
             )
-            right.button("Abrir", key=f"open_{patient['id']}", on_click=open_patient, args=(patient["id"],))
+            right.button("Abrir", key=f"open_{patient['id']}", on_click=open_patient, args=(patient["id"],),
+                         width="stretch")
 
 
 def register_view() -> None:
     page_header("Cadastrar paciente", eyebrow="Clínico")
     with st.form("register_form"):
+        st.markdown(section_label_html("Identificação"), unsafe_allow_html=True)
         full_name = st.text_input("Nome completo", key="reg_name")
-        date_of_birth = st.date_input(
+        dob_col, cpf_col = st.columns(2)
+        date_of_birth = dob_col.date_input(
             "Data de nascimento",
             value=None,
             min_value=date(1900, 1, 1),
@@ -550,9 +581,11 @@ def register_view() -> None:
             format="DD/MM/YYYY",
             key="reg_dob",
         )
-        cpf = st.text_input("CPF", placeholder="000.000.000-00", key="reg_cpf")
-        phone = st.text_input("Telefone (opcional)", placeholder="(00) 00000-0000", max_chars=40, key="reg_phone")
-        address = st.text_input("Endereço (opcional)", max_chars=300, key="reg_address")
+        cpf = cpf_col.text_input("CPF", placeholder="000.000.000-00", key="reg_cpf")
+        st.markdown(section_label_html("Contato (opcional)"), unsafe_allow_html=True)
+        phone_col, address_col = st.columns([1, 2])
+        phone = phone_col.text_input("Telefone (opcional)", placeholder="(00) 00000-0000", max_chars=40, key="reg_phone")
+        address = address_col.text_input("Endereço (opcional)", max_chars=300, key="reg_address")
         submitted = st.form_submit_button("Cadastrar", type="primary")
     if submitted:
         if not full_name.strip() or date_of_birth is None or not cpf.strip():
@@ -568,6 +601,28 @@ def register_view() -> None:
         st.rerun()
 
 
+def start_consultation(patient_id: int) -> None:
+    """“Novo atendimento” (unchanged behaviour: the API creates it and it opens)."""
+    try:
+        consultation = api().create_consultation(patient_id)
+    except ApiError as exc:
+        show_api_error(exc)
+        return
+    st.session_state["flash"] = "Atendimento iniciado."
+    open_consultation(consultation["id"])
+    st.rerun()
+
+
+def own_open_consultation(history: list[dict] | None) -> dict | None:
+    """The newest open consultation registered by the logged-in pharmacist (only the creator can continue it)."""
+    me = st.session_state["pharmacist"]["id"]
+    return next((c for c in history or [] if not c["closed_at"] and c["pharmacist"]["id"] == me), None)
+
+
+def cpf_display(patient: dict) -> str:
+    return format_cpf_full(patient["cpf"]) if cpf_revealed(patient["id"]) else mask_cpf_last2(patient["cpf"])
+
+
 def profile_view(patient_id: int) -> None:
     try:
         patient = api().get_patient(patient_id)
@@ -578,28 +633,67 @@ def profile_view(patient_id: int) -> None:
     st.button("← Voltar", key="back", on_click=close_patient)
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
-    page_header(patient["full_name"], eyebrow="Paciente")
-    with st.container(border=True):
-        st.subheader("Dados do paciente")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            field("Nome completo", patient["full_name"])
-        with col2:
-            field("Data de nascimento", format_date(patient["date_of_birth"]))
-        with col3:
-            field("CPF", format_cpf(patient["cpf"]))
-        if st.session_state.get("contact_edit") == patient_id:
+    history, history_error = None, None
+    try:
+        history = api().list_consultations(patient_id)
+    except ApiError as exc:
+        history_error = exc
+    patient_banner(patient, history)
+    left, right = st.columns([1, 2])
+    with left:
+        registry_card(patient)
+        contact_card(patient)
+    with right:
+        consultations_section(patient_id, history, history_error)
+
+
+def patient_banner(patient: dict, history: list[dict] | None) -> None:
+    """Identity banner: name, age and date of birth, establishment, CPF (masked by default) and the main action."""
+    pid = patient["id"]
+    establishment = st.session_state["pharmacist"].get("establishment_name")
+    continuing = own_open_consultation(history)
+    with st.container(border=True, key="patient_banner"):
+        info, actions = st.columns([3, 1], vertical_alignment="center")
+        with info:
+            st.markdown(banner_title_html(patient["full_name"]), unsafe_allow_html=True)
+            with st.container(horizontal=True, vertical_alignment="center", gap="small", key="patient_meta"):
+                st.markdown(meta_html([birth_label(patient["date_of_birth"], date.today()), establishment,
+                                       f"CPF {cpf_display(patient)}"]), unsafe_allow_html=True, width="content")
+                st.button("Ocultar CPF" if cpf_revealed(pid) else "Mostrar CPF", key=f"cpf_toggle_{pid}",
+                          type="tertiary", on_click=toggle_cpf, args=(pid,))
+                if any(not c["closed_at"] for c in history or []):
+                    status_badge("consultation_open")
+        with actions:
+            if continuing:
+                st.button("Continuar atendimento", key="continue_consultation", type="primary", width="stretch",
+                          on_click=open_consultation, args=(continuing["id"],))
+            if st.button("Novo atendimento", key="new_consultation", type="secondary" if continuing else "primary",
+                         width="stretch"):
+                start_consultation(pid)
+
+
+def registry_card(patient: dict) -> None:
+    """Dados cadastrais (the name is the banner title); the CPF follows the banner's Mostrar/Ocultar."""
+    with st.container(border=True, key="patient_registry"):
+        st.markdown(section_label_html("Dados cadastrais") + kv_html([
+            ("Data de nascimento", birth_label(patient["date_of_birth"], date.today())),
+            ("CPF", cpf_display(patient)),
+        ]), unsafe_allow_html=True)
+
+
+def contact_card(patient: dict) -> None:
+    pid = patient["id"]
+    with st.container(border=True, key="patient_contact"):
+        if st.session_state.get("contact_edit") == pid:
+            st.markdown(section_label_html("Contato"), unsafe_allow_html=True)
             contact_editor(patient)
-        else:
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                field("Telefone", patient.get("phone") or "—")
-            with col2:
-                field("Endereço", patient.get("address") or "—")
-            if st.button("Editar contato", key="contact_edit_open"):
-                st.session_state["contact_edit"] = patient_id
-                st.rerun()
-    consultations_section(patient_id)
+            return
+        st.markdown(section_label_html("Contato") + kv_html([("Telefone", patient.get("phone") or "—"),
+                                                             ("Endereço", patient.get("address") or "—")]),
+                    unsafe_allow_html=True)
+        if st.button("Editar contato", key="contact_edit_open", type="tertiary"):
+            st.session_state["contact_edit"] = pid
+            st.rerun()
 
 
 def contact_editor(patient: dict) -> None:
@@ -609,9 +703,9 @@ def contact_editor(patient: dict) -> None:
                               placeholder="(00) 00000-0000", key=f"contact_{patient['id']}_phone")
         address = st.text_input("Endereço (opcional)", value=patient.get("address") or "", max_chars=300,
                                 key=f"contact_{patient['id']}_address")
-        save_col, cancel_col, _ = st.columns([1, 1, 3])
-        save = save_col.form_submit_button("Salvar", type="primary")
-        cancel = cancel_col.form_submit_button("Cancelar")
+        with st.container(horizontal=True):
+            save = st.form_submit_button("Salvar", type="primary")
+            cancel = st.form_submit_button("Cancelar")
     if cancel:
         close_contact_edit()
         st.rerun()
@@ -628,40 +722,36 @@ def contact_editor(patient: dict) -> None:
         st.rerun()
 
 
-def consultations_section(patient_id: int) -> None:
-    with st.container(border=True):
-        title, action = st.columns([4, 1])
-        title.subheader("Atendimentos")
-        if action.button("Novo atendimento", key="new_consultation", type="primary", width="stretch"):
-            try:
-                consultation = api().create_consultation(patient_id)
-            except ApiError as exc:
-                show_api_error(exc)
-                return
-            st.session_state["flash"] = "Atendimento iniciado."
-            open_consultation(consultation["id"])
-            st.rerun()
-        try:
-            history = api().list_consultations(patient_id)
-        except ApiError as exc:
-            show_api_error(exc)
+def consultations_section(patient_id: int, history: list[dict] | None, error: ApiError | None) -> None:
+    """Consultation history as returned by the API (newest first); open consultations are emphasised and the
+    pharmacist's own open one says “Continuar”."""
+    with st.container(border=True, key="patient_consultations"):
+        count = f" ({len(history)})" if history else ""
+        st.markdown(section_label_html(f"Atendimentos{count}"), unsafe_allow_html=True)
+        if error is not None:
+            show_api_error(error)
             return
         if not history:
             empty_state("Nenhum atendimento registrado", "Use “Novo atendimento” para iniciar o primeiro.")
             return
+        me = st.session_state["pharmacist"]["id"]
         for consultation in history:
             pharmacist = consultation["pharmacist"]
-            left, right = st.columns([5, 1])
-            left.markdown(
-                f"**{format_date(consultation['consultation_date'])}** · "
-                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])} · {badge_md(consultation_status(consultation))}"
-            )
-            right.button(
-                "Abrir",
-                key=f"open_consultation_{consultation['id']}",
-                on_click=open_consultation,
-                args=(consultation["id"],),
-            )
+            is_open = not consultation["closed_at"]
+            own_open = is_open and pharmacist["id"] == me
+            with st.container(key=f"crow_open_{consultation['id']}" if is_open else f"crow_{consultation['id']}"):
+                left, right = st.columns([5, 1], vertical_alignment="center")
+                left.markdown(
+                    f"**{format_date(consultation['consultation_date'])}** · {md(pharmacist['full_name'])} · "
+                    f":gray[{md(pharmacist['crf'])}] {badge_md(consultation_status(consultation))}"
+                )
+                right.button(
+                    "Continuar" if own_open else "Abrir",
+                    key=f"open_consultation_{consultation['id']}",
+                    on_click=open_consultation,
+                    args=(consultation["id"],),
+                    width="stretch",
+                )
 
 
 SOAP_SECTIONS = [
@@ -1083,7 +1173,7 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
         )
         pharmacist = st.session_state["pharmacist"]
         st.caption(
-            f"Paciente: {md(patient['full_name'])} · CPF {format_cpf(patient['cpf'])} — "
+            f"Paciente: {md(patient['full_name'])} · CPF {md(mask_cpf_last2(patient['cpf']))} — "
             f"Farmacêutico(a): {md(pharmacist['full_name'])} · {md(pharmacist['crf'])} "
             "(preenchidos automaticamente no documento)"
         )

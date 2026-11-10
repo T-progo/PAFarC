@@ -10,6 +10,8 @@ the `pt-*` classes created here (never Streamlit's generated class names).
 """
 
 import html
+import re
+from datetime import date
 
 import streamlit as st
 
@@ -96,6 +98,29 @@ CSS = """
   [data-testid^="stBaseButton"] { min-height: 40px; }
   .st-key-nav [data-testid="stRadioOption"] { min-height: 40px; }
 }
+
+/* Text-style (tertiary) actions, e.g. "Mostrar CPF", "Editar contato": accent colour, still labelled text. */
+[data-testid="stBaseButton-tertiary"] p { color: var(--accent); font-weight: 600; }
+
+/* Patient banner and summary lists */
+.pt-banner-name { color: var(--text); font-size: 22px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.pt-meta { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pt-meta strong { color: var(--text); font-weight: 600; }
+.pt-nowrap { white-space: nowrap; }
+.pt-section-label { color: var(--text-subtle); font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; }
+.pt-kv { display: grid; grid-template-columns: minmax(96px, 38%) 1fr; gap: var(--space-2); padding: 6px 0;
+  border-bottom: 1px solid var(--separator); font-size: 14px; }
+.pt-kv:last-child { border-bottom: 0; }
+.pt-kv-key { color: var(--text-muted); font-size: 13px; }
+.pt-kv-value { color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+/* Compact record rows (search results, consultation history): our keyed containers only. */
+[class*="st-key-prow_"], [class*="st-key-crow_"] { padding: 6px var(--space-2) 8px; border-bottom: 1px solid var(--separator);
+  border-left: 2px solid transparent; border-radius: var(--radius-sm); }
+[class*="st-key-prow_"]:hover, [class*="st-key-crow_"]:hover { background: var(--surface-nested); }
+[class*="st-key-crow_open_"] { background: var(--surface-selected); border-left-color: var(--accent); }
+[class*="st-key-prow_"] p, [class*="st-key-crow_"] p { margin-bottom: 0; }
 
 /* "Cancelar lançamento": secondary button with a muted danger outline. */
 .st-key-qc_cancel_actions button, .st-key-qc_cancel_confirm_actions button { border-color: var(--danger); }
@@ -207,3 +232,57 @@ def identity_html(user: dict) -> str:
         org = user.get("establishment_name") or "Sem estabelecimento vinculado"
         parts.append(f'<div class="pt-identity-org"><span class="pt-identity-org-label">Estabelecimento</span>{_esc(org)}</div>')
     return "".join(parts)
+
+
+# ---- patient identity (Phase 2) ----------------------------------------------------------------------
+
+def cpf_digits(value) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def mask_cpf_last2(value) -> str:
+    """Privacy display of a CPF: only the two check digits, e.g. ***.***.***-25 (visual only; the stored
+    value is untouched)."""
+    digits = cpf_digits(value)
+    return f"***.***.***-{digits[-2:]}" if len(digits) >= 2 else "***.***.***-**"
+
+
+def format_cpf_full(value) -> str:
+    digits = cpf_digits(value)
+    return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}" if len(digits) == 11 else str(value)
+
+
+def age_on(born: date, today: date) -> int:
+    """Completed years: one less until the birthday (month/day) is reached this year."""
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
+def age_label(born: date, today: date) -> str:
+    years = age_on(born, today)
+    return "1 ano" if years == 1 else f"{years} anos"
+
+
+def birth_label(dob_iso: str, today: date) -> str:
+    """'68 anos · 14/03/1958' (age first, the date of birth is always kept)."""
+    born = date.fromisoformat(dob_iso)
+    return f"{age_label(born, today)} · {born.strftime('%d/%m/%Y')}"
+
+
+def banner_title_html(name: str) -> str:
+    return (f'<div class="pt-eyebrow">Paciente</div>'
+            f'<div class="pt-banner-name" role="heading" aria-level="1">{_esc(name)}</div>')
+
+
+def meta_html(parts: list[str]) -> str:
+    """One metadata line, parts joined by a middle dot (each part escaped)."""
+    return '<div class="pt-meta">' + " · ".join(f'<span class="pt-nowrap">{_esc(p)}</span>' for p in parts if p) + "</div>"
+
+
+def section_label_html(text: str) -> str:
+    return f'<div class="pt-section-label">{_esc(text)}</div>'
+
+
+def kv_html(rows: list[tuple[str, str]]) -> str:
+    """Compact summary list (key / value rows)."""
+    return "".join(f'<div class="pt-kv"><div class="pt-kv-key">{_esc(k)}</div><div class="pt-kv-value">{_esc(v)}</div></div>'
+                   for k, v in rows)
