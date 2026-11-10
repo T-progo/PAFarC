@@ -556,13 +556,15 @@ def register_view() -> None:
             key="reg_dob",
         )
         cpf = st.text_input("CPF", placeholder="000.000.000-00", key="reg_cpf")
+        phone = st.text_input("Telefone (opcional)", placeholder="(00) 00000-0000", max_chars=40, key="reg_phone")
+        address = st.text_input("Endereço (opcional)", max_chars=300, key="reg_address")
         submitted = st.form_submit_button("Cadastrar", type="primary")
     if submitted:
         if not full_name.strip() or date_of_birth is None or not cpf.strip():
             st.warning("Preencha nome completo, data de nascimento e CPF.")
             return
         try:
-            patient = api().create_patient(full_name, date_of_birth, cpf)
+            patient = api().create_patient(full_name, date_of_birth, cpf, phone, address)
         except ApiError as exc:
             show_api_error(exc)
             return
@@ -591,6 +593,11 @@ def profile_view(patient_id: int) -> None:
             field("Data de nascimento", format_date(patient["date_of_birth"]))
         with col3:
             field("CPF", format_cpf(patient["cpf"]))
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            field("Telefone", patient.get("phone") or "—")
+        with col2:
+            field("Endereço", patient.get("address") or "—")
     consultations_section(patient_id)
 
 

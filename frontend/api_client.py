@@ -48,8 +48,9 @@ class PharmaTechAPI:
     def me(self) -> dict:
         return self._request("GET", "/auth/me")
 
-    def create_patient(self, full_name: str, date_of_birth: date, cpf: str) -> dict:
-        payload = {"full_name": full_name, "date_of_birth": date_of_birth.isoformat(), "cpf": cpf}
+    def create_patient(self, full_name: str, date_of_birth: date, cpf: str, phone: str = "", address: str = "") -> dict:
+        payload = {"full_name": full_name, "date_of_birth": date_of_birth.isoformat(), "cpf": cpf,
+                   "phone": phone, "address": address}
         return self._request("POST", "/patients", json=payload)
 
     def search_patients(self, query: str) -> list[dict]:

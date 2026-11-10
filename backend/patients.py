@@ -72,7 +72,13 @@ def name_prefix_indexes(full_name: str) -> set[str]:
     }
 
 
-def create_patient(db: Session, *, establishment_id: int, full_name: str, date_of_birth: date, cpf: str) -> Patient:
+def optional_text(value: str | None) -> str | None:
+    """Optional free text (phone, address): kept as typed, without surrounding spaces; empty -> None."""
+    return (value or "").strip() or None
+
+
+def create_patient(db: Session, *, establishment_id: int, full_name: str, date_of_birth: date, cpf: str,
+                   phone: str | None = None, address: str | None = None) -> Patient:
     """A new patient record of the given establishment (the caller's own, never from the request).
     A CPF is unique within the establishment only; other establishments are never consulted."""
     full_name = clean_full_name(full_name)
@@ -95,6 +101,8 @@ def create_patient(db: Session, *, establishment_id: int, full_name: str, date_o
         date_of_birth=date_of_birth,
         cpf=cpf_digits,
         cpf_index=cpf_index,
+        phone=optional_text(phone),
+        address=optional_text(address),
         name_tokens=[PatientNameToken(token_index=t) for t in name_prefix_indexes(full_name)],
     )
     db.add(patient)
@@ -196,7 +204,7 @@ def create_patient_endpoint(
     try:
         return create_patient(
             db, establishment_id=establishment_id, full_name=data.full_name,
-            date_of_birth=data.date_of_birth, cpf=data.cpf,
+            date_of_birth=data.date_of_birth, cpf=data.cpf, phone=data.phone, address=data.address,
         )
     except DuplicateCPFError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from None

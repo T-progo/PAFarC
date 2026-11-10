@@ -76,6 +76,8 @@ class PatientCreate(BaseModel):
     full_name: str = Field(max_length=200)
     date_of_birth: date
     cpf: str = Field(max_length=20)
+    phone: str = Field(default="", max_length=40)  # optional, kept as typed
+    address: str = Field(default="", max_length=300)  # optional, kept as typed
 
 
 class PatientSearch(BaseModel):
@@ -89,6 +91,8 @@ class PatientOut(BaseModel):
     full_name: str
     date_of_birth: date
     cpf: str
+    phone: str | None
+    address: str | None
     created_at: datetime
     updated_at: datetime
 

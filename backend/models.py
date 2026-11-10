@@ -109,6 +109,9 @@ class Patient(Base):
     date_of_birth: Mapped[date] = mapped_column("date_of_birth_encrypted", EncryptedDate)
     cpf: Mapped[str] = mapped_column("cpf_encrypted", EncryptedString)
     cpf_index: Mapped[str] = mapped_column(String(64))
+    # Optional contact data, encrypted like the rest of the personal data; not searchable.
+    phone: Mapped[str | None] = mapped_column("phone_encrypted", EncryptedString, nullable=True)
+    address: Mapped[str | None] = mapped_column("address_encrypted", EncryptedString, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

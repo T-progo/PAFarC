@@ -49,10 +49,11 @@ def init_db() -> None:
 
     engine = get_engine()
     Base.metadata.create_all(engine)
-    _add_missing_columns(engine)
+    _add_missing_columns(engine, _ADDED_COLUMNS)
     # Establishment ownership of clinical data: one-time atomic migration of a legacy database
     # (refuses to start, changing nothing, if any record cannot be assigned), then the guards.
     clinical_isolation.migrate(engine)
+    _add_missing_columns(engine, _ADDED_PATIENT_COLUMNS)
     clinical_isolation.install_guards(engine)
 
 
@@ -77,12 +78,17 @@ _ADDED_COLUMNS = {
         "cancelled_by_pharmacist_id": "INTEGER REFERENCES pharmacists(id)",
     },
 }
+# Added after the ownership migration above, which rebuilds the patients table of a legacy database
+# (with these columns) and must leave a database it refuses to migrate untouched.
+_ADDED_PATIENT_COLUMNS = {
+    "patients": {"phone_encrypted": "TEXT", "address_encrypted": "TEXT"},
+}
 
 
-def _add_missing_columns(engine: Engine) -> None:
+def _add_missing_columns(engine: Engine, added: dict[str, dict[str, str]] = _ADDED_COLUMNS) -> None:
     existing_tables = set(inspect(engine).get_table_names())
     with engine.begin() as connection:
-        for table, columns in _ADDED_COLUMNS.items():
+        for table, columns in added.items():
             if table not in existing_tables:
                 continue
             present = {c["name"] for c in inspect(connection).get_columns(table)}
