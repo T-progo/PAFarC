@@ -193,7 +193,7 @@ def test_establishment_change_clears_patient_and_reveal(app):
     assert FULL not in _text(at) and "Paciente 7" not in _text(at)
 
 
-def test_search_rows_keep_the_existing_mask_and_no_contact(app):
+def test_search_rows_use_the_standard_mask_and_no_contact(app):
     run, state = app
     state["search"] = [{k: v for k, v in _patient(pid, cpf).items() if k not in ("phone", "address")}
                        for pid, cpf in ((7, "52998224725"), (8, "11144477735"))]
@@ -202,7 +202,10 @@ def test_search_rows_keep_the_existing_mask_and_no_contact(app):
     at.text_input(key="search_query").set_value("Paciente").run()
     at.button(key="FormSubmitter:search_form-Buscar").click().run()
     text = _text(at)
-    assert "***.982.247-**" in text.replace("\\", "") and FULL not in text and "90000-0000" not in text
+    plain = text.replace("\\", "")  # rows are Markdown-escaped
+    # Phase 2.1: the same mask as the patient page (was ***.982.247-**, which exposed the middle digits)
+    assert MASKED in plain and MASKED8 in plain and "982.247" not in plain and "444.777" not in plain
+    assert FULL not in text and "90000-0000" not in text
     assert "2 pacientes encontrados" in text and {"open_7", "open_8"} <= {b.key for b in at.button}
     assert "68 anos" in text or "67 anos" in text  # age · date of birth shown, never instead of the date
     assert "14/03/1958" in text

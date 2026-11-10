@@ -53,10 +53,6 @@ def md(text: str) -> str:
     return _MARKDOWN_SPECIAL.sub(r"\\\1", str(text))
 
 
-def mask_cpf(digits: str) -> str:
-    return f"***.{digits[3:6]}.{digits[6:9]}-**"
-
-
 def format_date(iso: str) -> str:
     return date.fromisoformat(iso).strftime("%d/%m/%Y")
 
@@ -76,6 +72,7 @@ def show_api_error(exc: ApiError) -> None:
 
 def open_patient(patient_id: int) -> None:
     forget_cpf_reveals()  # a newly opened patient always starts with the CPF masked
+    forget_new_consultation_confirmations()
     st.session_state["patient_id"] = patient_id
     # Clear the menu selection so both menu items respond to a click while a
     # patient is open (a radio only reacts when its selection changes).
@@ -85,6 +82,7 @@ def open_patient(patient_id: int) -> None:
 def close_patient() -> None:
     st.session_state.pop("patient_id", None)
     forget_cpf_reveals()
+    forget_new_consultation_confirmations()
     close_contact_edit()
     close_consultation()
 
@@ -104,6 +102,20 @@ def toggle_cpf(patient_id: int) -> None:
 
 def forget_cpf_reveals() -> None:
     for key in [k for k in st.session_state if str(k).startswith("cpf_revealed_")]:
+        del st.session_state[key]
+
+
+NEW_CONSULTATION_WARNING = (
+    "Já existe um atendimento em andamento para este paciente, iniciado por outro farmacêutico. Ao iniciar um "
+    "novo atendimento, o atendimento anterior será encerrado. Deseja continuar?")
+
+
+def new_consultation_confirm_key(patient_id: int) -> str:
+    return f"new_consultation_confirm_{patient_id}"
+
+
+def forget_new_consultation_confirmations() -> None:
+    for key in [k for k in st.session_state if str(k).startswith("new_consultation_confirm_")]:
         del st.session_state[key]
 
 
@@ -561,7 +573,7 @@ def search_view() -> None:
             left, right = st.columns([5, 1], vertical_alignment="center")
             left.markdown(
                 f"**{md(patient['full_name'])}**  \n"
-                f":gray[{md(birth_label(patient['date_of_birth'], today))} · CPF {md(mask_cpf(patient['cpf']))}]"
+                f":gray[{md(birth_label(patient['date_of_birth'], today))} · CPF {md(mask_cpf_last2(patient['cpf']))}]"
             )
             right.button("Abrir", key=f"open_{patient['id']}", on_click=open_patient, args=(patient["id"],),
                          width="stretch")
@@ -602,15 +614,26 @@ def register_view() -> None:
 
 
 def start_consultation(patient_id: int) -> None:
-    """“Novo atendimento” (unchanged behaviour: the API creates it and it opens)."""
+    """“Novo atendimento” (unchanged behaviour: the API creates it, closing the patient's previous open
+    consultation(s) itself, and it opens)."""
+    forget_new_consultation_confirmations()
     try:
         consultation = api().create_consultation(patient_id)
     except ApiError as exc:
+        if exc.status_code == 404:  # e.g. no longer in this pharmacist's establishment: drop the stale patient
+            close_patient()
         show_api_error(exc)
         return
     st.session_state["flash"] = "Atendimento iniciado."
     open_consultation(consultation["id"])
     st.rerun()
+
+
+def colleague_open_consultation(history: list[dict] | None) -> bool:
+    """True when an open consultation of this patient was started by ANOTHER pharmacist (server ids, not names):
+    starting a new one would close it (backend rule), so the user is asked to confirm first."""
+    me = st.session_state["pharmacist"]["id"]
+    return any(not c["closed_at"] and c["pharmacist"]["id"] != me for c in history or [])
 
 
 def own_open_consultation(history: list[dict] | None) -> dict | None:
@@ -667,9 +690,29 @@ def patient_banner(patient: dict, history: list[dict] | None) -> None:
             if continuing:
                 st.button("Continuar atendimento", key="continue_consultation", type="primary", width="stretch",
                           on_click=open_consultation, args=(continuing["id"],))
-            if st.button("Novo atendimento", key="new_consultation", type="secondary" if continuing else "primary",
-                         width="stretch"):
+            confirming = st.session_state.get(new_consultation_confirm_key(pid), False)
+            # While the warning below is open it carries the action, so the button is not shown twice.
+            if not confirming and st.button("Novo atendimento", key="new_consultation",
+                                            type="secondary" if continuing else "primary", width="stretch"):
+                if colleague_open_consultation(history):
+                    st.session_state[new_consultation_confirm_key(pid)] = True  # nothing is created yet
+                    st.rerun()
                 start_consultation(pid)
+    if st.session_state.get(new_consultation_confirm_key(pid), False):
+        new_consultation_confirmation(pid)
+
+
+def new_consultation_confirmation(patient_id: int) -> None:
+    """Asked before a new consultation would close a colleague's open one (the closing itself stays the
+    backend's rule). The state is per patient and cleared on cancel, on confirm and with the patient context."""
+    with st.container(border=True, key="new_consultation_warning"):
+        st.warning(NEW_CONSULTATION_WARNING, icon=":material/warning:")
+        with st.container(horizontal=True):
+            if st.button("Cancelar", key=f"new_consultation_cancel_{patient_id}"):
+                forget_new_consultation_confirmations()
+                st.rerun()
+            if st.button("Iniciar novo atendimento", key=f"new_consultation_yes_{patient_id}", type="primary"):
+                start_consultation(patient_id)  # clears the confirmation before the single create request
 
 
 def registry_card(patient: dict) -> None:
