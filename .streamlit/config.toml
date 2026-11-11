@@ -1,18 +1,10 @@
 [theme]
-# Original PharmaTech colours (warm dark brown, champagne accent, cream text). Typography and spacing from the
-# UI redesign are kept. Bundled sans-serif font: no external font requests.
 base = "dark"
 primaryColor = "#D4B98C"
 backgroundColor = "#2B2622"
 secondaryBackgroundColor = "#3A332D"
 textColor = "#F3ECE2"
-showWidgetBorder = true
 font = "sans serif"
-baseFontSize = 14
-baseRadius = "6px"
-buttonRadius = "6px"
-headingFontSizes = ["22px", "20px", "17px", "15px", "14px", "13px"]
-headingFontWeights = [600, 600, 600, 600, 600, 600]
 
 [client]
 toolbarMode = "minimal"

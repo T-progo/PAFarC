@@ -3,6 +3,7 @@
     streamlit run frontend/app.py
 """
 
+import html
 import re
 import sys
 from datetime import date, datetime, timezone
@@ -13,11 +14,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_client import ApiError, PharmaTechAPI  # noqa: E402
 from exam_kit import EMPTY_KIT, EXAM_FORM_FIELDS, exam_form_has_input, kit_from_api, merge_kit_suggestion  # noqa: E402
-from ui import (  # noqa: E402
-    account_status, apply_ui, badge_md, banner_title_html, birth_label, consultation_status, empty_state, field,
-    format_cpf_full, identity_html, kv_html, mask_cpf_last2, meta_html, page_header, qc_evaluation_status,
-    qc_lifecycle_status, section_label_html, status_badge,
-)
+from ui import format_cpf_full, mask_cpf_last2  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 PHARMATECH_LOGO = ROOT / "IMG_1485.jpeg"
@@ -36,7 +33,25 @@ UFS = ("AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "
        "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO")
 
 st.set_page_config(page_title=f"{APP_NAME} · PAFarC", page_icon=str(PHARMATECH_LOGO), layout="wide")
-apply_ui()
+
+st.markdown(
+    """
+    <style>
+    h1, h2, h3 { color: #F7EFE3; letter-spacing: 0.02em; }
+    [data-testid="stSidebar"] { border-right: 1px solid #4A4138; }
+    [data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] { border-color: #554A40; }
+    .pt-label { color: #BBAE9E; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .pt-value { color: #F3ECE2; font-size: 1.15rem; margin-bottom: 0.8rem; }
+    .pt-muted { color: #BBAE9E; }
+    /* Dark text on the champagne primary buttons (white-on-silver was unreadable). */
+    button[kind^="primary"], button[kind^="primary"] p { color: #2B2622 !important; font-weight: 600; }
+    /* "Cancelar lançamento": secondary button with a muted danger outline. */
+    .st-key-qc_cancel_actions button, .st-key-qc_cancel_confirm_actions button { border-color: #9E4A3A; }
+    .st-key-qc_cancel_actions button p, .st-key-qc_cancel_confirm_actions button p { color: #E39A88; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -119,11 +134,6 @@ def forget_new_consultation_confirmations() -> None:
         del st.session_state[key]
 
 
-def go_register() -> None:
-    """Existing menu entry "Cadastrar paciente" (same navigation value as the sidebar)."""
-    st.session_state["nav"] = NAV_REGISTER
-
-
 def close_contact_edit() -> None:
     """Leave the contact editor; typed values are discarded (the form reopens with the stored ones)."""
     st.session_state.pop("contact_edit", None)
@@ -204,6 +214,14 @@ def close_consultation() -> None:
         del st.session_state[key]
 
 
+def field(label: str, value: str) -> None:
+    st.markdown(
+        f'<div class="pt-label">{html.escape(label)}</div>'
+        f'<div class="pt-value">{html.escape(value)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def unsaved_page_guard(active: bool) -> None:
     """Ask the browser to confirm before closing/reloading the tab while SOAP has unsaved text."""
     flag = "true" if active else "false"
@@ -272,16 +290,11 @@ def sidebar() -> None:
     pharmacist = st.session_state["pharmacist"]
     if st.session_state.pop("reset_nav", False):
         st.session_state["nav"] = None
-    options = menu_options()
-    # Section caption: administrators only ever see the administration items (strict role separation).
-    section = "Administração" if options and all(o in ADMIN_NAV for o in options) else "Clínico"
     with st.sidebar:
-        st.image(str(PAFARC_LOGO), width=120)
-        st.markdown(f'<div class="pt-brand">{APP_NAME} · PAFarC</div>', unsafe_allow_html=True)
-        st.markdown(identity_html(pharmacist), unsafe_allow_html=True)
+        st.image(str(PAFARC_LOGO), width="stretch")
+        st.markdown(f"**{md(pharmacist['full_name'])}**  \n{md(pharmacist['crf'])}")
         st.divider()
-        # Same widget, key and option values as before; only the shown label of the admin items is shorter.
-        st.radio(section, options, key="nav", on_change=on_nav_change, format_func=nav_label)
+        st.radio("Menu", menu_options(), key="nav", on_change=on_nav_change)
         st.divider()
         if st.button("Sair", key="logout", width="stretch"):
             if may_leave_consultation():
@@ -299,11 +312,6 @@ def menu_options() -> list[str]:
     return options
 
 
-def nav_label(option: str) -> str:
-    """Menu text: the administration items appear under the "Administração" caption without the prefix."""
-    return option.removeprefix("Administração · ")
-
-
 def bump_admin_forms() -> None:
     """New widget keys after a successful change, so the browser shows fresh forms."""
     st.session_state["admin_gen"] = st.session_state.get("admin_gen", 0) + 1
@@ -314,7 +322,7 @@ def establishment_label(est: dict) -> str:
 
 
 def users_view() -> None:
-    page_header("Usuários", eyebrow="Administração")
+    st.header("Usuários")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     try:
@@ -432,7 +440,7 @@ def edit_user_panel(user: dict, gen: int, est_by_id: dict) -> None:
 
     status_col, password_col = st.columns(2)
     with status_col:
-        st.markdown(f"**Situação:** {badge_md(account_status(user))}")
+        st.markdown(f"**Situação:** {'Ativo' if user['active'] else 'Bloqueado'}")
         if is_self:
             st.caption("Você não pode bloquear o seu próprio usuário.")
         else:
@@ -466,7 +474,7 @@ def edit_user_panel(user: dict, gen: int, est_by_id: dict) -> None:
 
 
 def establishments_view() -> None:
-    page_header("Estabelecimentos", eyebrow="Administração")
+    st.header("Estabelecimentos")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     try:
@@ -536,17 +544,14 @@ def establishments_view() -> None:
 
 
 def search_view() -> None:
-    head, action = st.columns([4, 1], vertical_alignment="bottom")
-    with head:
-        page_header("Pacientes", eyebrow="Clínico")
-    action.button("Novo paciente", key="search_new_patient", on_click=go_register, width="stretch")
+    st.header("Buscar paciente")
     with st.form("search_form"):
-        field_col, button_col = st.columns([5, 1], vertical_alignment="bottom")
-        query = field_col.text_input(
-            "Nome ou CPF", key="search_query", placeholder="Nome (ex.: maria sant) ou CPF completo",
-            help="Digite o nome (ou o início de cada nome, com pelo menos 3 letras — ex.: “maria sant”) "
-                 "ou o CPF completo. Maiúsculas e acentos não fazem diferença.")
-        submitted = button_col.form_submit_button("Buscar", type="primary", width="stretch")
+        query = st.text_input("Nome ou CPF", key="search_query")
+        submitted = st.form_submit_button("Buscar", type="primary")
+    st.caption(
+        "Digite o nome (ou o início de cada nome, com pelo menos 3 letras — ex.: \"maria sant\") "
+        "ou o CPF completo. Maiúsculas e acentos não fazem diferença."
+    )
     if submitted:
         if not query.strip():
             st.warning("Informe o nome completo ou o CPF.")
@@ -562,30 +567,24 @@ def search_view() -> None:
     if results is None:
         return
     if not results:
-        empty_state("Nenhum paciente encontrado", "Confira o nome digitado ou informe o CPF completo.")
-        st.button("Cadastrar novo paciente", key="empty_new_patient", on_click=go_register)
+        st.info("Nenhum paciente encontrado.")
         return
-    count = len(results)
-    st.caption(f"{count} paciente encontrado" if count == 1 else f"{count} pacientes encontrados")
-    today = date.today()
-    for patient in results:  # PatientSummary only: no phone/address in search results
-        with st.container(key=f"prow_{patient['id']}"):
-            left, right = st.columns([5, 1], vertical_alignment="center")
+    st.markdown(f"**{len(results)} paciente(s) encontrado(s)**")
+    for patient in results:
+        with st.container(border=True):
+            left, right = st.columns([5, 1])
             left.markdown(
                 f"**{md(patient['full_name'])}**  \n"
-                f":gray[{md(birth_label(patient['date_of_birth'], today))} · CPF {md(mask_cpf_last2(patient['cpf']))}]"
+                f"Nascimento: {format_date(patient['date_of_birth'])} · CPF: {md(mask_cpf_last2(patient['cpf']))}"
             )
-            right.button("Abrir", key=f"open_{patient['id']}", on_click=open_patient, args=(patient["id"],),
-                         width="stretch")
+            right.button("Abrir", key=f"open_{patient['id']}", on_click=open_patient, args=(patient["id"],))
 
 
 def register_view() -> None:
-    page_header("Cadastrar paciente", eyebrow="Clínico")
+    st.header("Cadastrar paciente")
     with st.form("register_form"):
-        st.markdown(section_label_html("Identificação"), unsafe_allow_html=True)
         full_name = st.text_input("Nome completo", key="reg_name")
-        dob_col, cpf_col = st.columns(2)
-        date_of_birth = dob_col.date_input(
+        date_of_birth = st.date_input(
             "Data de nascimento",
             value=None,
             min_value=date(1900, 1, 1),
@@ -593,11 +592,9 @@ def register_view() -> None:
             format="DD/MM/YYYY",
             key="reg_dob",
         )
-        cpf = cpf_col.text_input("CPF", placeholder="000.000.000-00", key="reg_cpf")
-        st.markdown(section_label_html("Contato (opcional)"), unsafe_allow_html=True)
-        phone_col, address_col = st.columns([1, 2])
-        phone = phone_col.text_input("Telefone (opcional)", placeholder="(00) 00000-0000", max_chars=40, key="reg_phone")
-        address = address_col.text_input("Endereço (opcional)", max_chars=300, key="reg_address")
+        cpf = st.text_input("CPF", placeholder="000.000.000-00", key="reg_cpf")
+        phone = st.text_input("Telefone (opcional)", placeholder="(00) 00000-0000", max_chars=40, key="reg_phone")
+        address = st.text_input("Endereço (opcional)", max_chars=300, key="reg_address")
         submitted = st.form_submit_button("Cadastrar", type="primary")
     if submitted:
         if not full_name.strip() or date_of_birth is None or not cpf.strip():
@@ -613,39 +610,6 @@ def register_view() -> None:
         st.rerun()
 
 
-def start_consultation(patient_id: int) -> None:
-    """“Novo atendimento” (unchanged behaviour: the API creates it, closing the patient's previous open
-    consultation(s) itself, and it opens)."""
-    forget_new_consultation_confirmations()
-    try:
-        consultation = api().create_consultation(patient_id)
-    except ApiError as exc:
-        if exc.status_code == 404:  # e.g. no longer in this pharmacist's establishment: drop the stale patient
-            close_patient()
-        show_api_error(exc)
-        return
-    st.session_state["flash"] = "Atendimento iniciado."
-    open_consultation(consultation["id"])
-    st.rerun()
-
-
-def colleague_open_consultation(history: list[dict] | None) -> bool:
-    """True when an open consultation of this patient was started by ANOTHER pharmacist (server ids, not names):
-    starting a new one would close it (backend rule), so the user is asked to confirm first."""
-    me = st.session_state["pharmacist"]["id"]
-    return any(not c["closed_at"] and c["pharmacist"]["id"] != me for c in history or [])
-
-
-def own_open_consultation(history: list[dict] | None) -> dict | None:
-    """The newest open consultation registered by the logged-in pharmacist (only the creator can continue it)."""
-    me = st.session_state["pharmacist"]["id"]
-    return next((c for c in history or [] if not c["closed_at"] and c["pharmacist"]["id"] == me), None)
-
-
-def cpf_display(patient: dict) -> str:
-    return format_cpf_full(patient["cpf"]) if cpf_revealed(patient["id"]) else mask_cpf_last2(patient["cpf"])
-
-
 def profile_view(patient_id: int) -> None:
     try:
         patient = api().get_patient(patient_id)
@@ -656,87 +620,32 @@ def profile_view(patient_id: int) -> None:
     st.button("← Voltar", key="back", on_click=close_patient)
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
-    history, history_error = None, None
-    try:
-        history = api().list_consultations(patient_id)
-    except ApiError as exc:
-        history_error = exc
-    patient_banner(patient, history)
-    left, right = st.columns([1, 2])
-    with left:
-        registry_card(patient)
-        contact_card(patient)
-    with right:
-        consultations_section(patient_id, history, history_error)
-
-
-def patient_banner(patient: dict, history: list[dict] | None) -> None:
-    """Identity banner: name, age and date of birth, establishment, CPF (masked by default) and the main action."""
-    pid = patient["id"]
-    establishment = st.session_state["pharmacist"].get("establishment_name")
-    continuing = own_open_consultation(history)
-    with st.container(border=True, key="patient_banner"):
-        info, actions = st.columns([3, 1], vertical_alignment="center")
-        with info:
-            st.markdown(banner_title_html(patient["full_name"]), unsafe_allow_html=True)
-            with st.container(horizontal=True, vertical_alignment="center", gap="small", key="patient_meta"):
-                st.markdown(meta_html([birth_label(patient["date_of_birth"], date.today()), establishment,
-                                       f"CPF {cpf_display(patient)}"]), unsafe_allow_html=True, width="content")
-                st.button("Ocultar CPF" if cpf_revealed(pid) else "Mostrar CPF", key=f"cpf_toggle_{pid}",
-                          type="tertiary", on_click=toggle_cpf, args=(pid,))
-                if any(not c["closed_at"] for c in history or []):
-                    status_badge("consultation_open")
-        with actions:
-            if continuing:
-                st.button("Continuar atendimento", key="continue_consultation", type="primary", width="stretch",
-                          on_click=open_consultation, args=(continuing["id"],))
-            confirming = st.session_state.get(new_consultation_confirm_key(pid), False)
-            # While the warning below is open it carries the action, so the button is not shown twice.
-            if not confirming and st.button("Novo atendimento", key="new_consultation",
-                                            type="secondary" if continuing else "primary", width="stretch"):
-                if colleague_open_consultation(history):
-                    st.session_state[new_consultation_confirm_key(pid)] = True  # nothing is created yet
-                    st.rerun()
-                start_consultation(pid)
-    if st.session_state.get(new_consultation_confirm_key(pid), False):
-        new_consultation_confirmation(pid)
-
-
-def new_consultation_confirmation(patient_id: int) -> None:
-    """Asked before a new consultation would close a colleague's open one (the closing itself stays the
-    backend's rule). The state is per patient and cleared on cancel, on confirm and with the patient context."""
-    with st.container(border=True, key="new_consultation_warning"):
-        st.warning(NEW_CONSULTATION_WARNING, icon=":material/warning:")
-        with st.container(horizontal=True):
-            if st.button("Cancelar", key=f"new_consultation_cancel_{patient_id}"):
-                forget_new_consultation_confirmations()
-                st.rerun()
-            if st.button("Iniciar novo atendimento", key=f"new_consultation_yes_{patient_id}", type="primary"):
-                start_consultation(patient_id)  # clears the confirmation before the single create request
-
-
-def registry_card(patient: dict) -> None:
-    """Dados cadastrais (the name is the banner title); the CPF follows the banner's Mostrar/Ocultar."""
-    with st.container(border=True, key="patient_registry"):
-        st.markdown(section_label_html("Dados cadastrais") + kv_html([
-            ("Data de nascimento", birth_label(patient["date_of_birth"], date.today())),
-            ("CPF", cpf_display(patient)),
-        ]), unsafe_allow_html=True)
-
-
-def contact_card(patient: dict) -> None:
-    pid = patient["id"]
-    with st.container(border=True, key="patient_contact"):
-        if st.session_state.get("contact_edit") == pid:
-            st.markdown(section_label_html("Contato"), unsafe_allow_html=True)
+    st.header(md(patient["full_name"]))
+    with st.container(border=True):
+        st.subheader("Dados do paciente")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            field("Nome completo", patient["full_name"])
+        with col2:
+            field("Data de nascimento", format_date(patient["date_of_birth"]))
+        with col3:
+            # Masked by default; the full CPF (already authorised for this pharmacist) only on request.
+            shown = format_cpf_full(patient["cpf"]) if cpf_revealed(patient_id) else mask_cpf_last2(patient["cpf"])
+            field("CPF", shown)
+            st.button("Ocultar CPF" if cpf_revealed(patient_id) else "Mostrar CPF", key=f"cpf_toggle_{patient_id}",
+                      on_click=toggle_cpf, args=(patient_id,))
+        if st.session_state.get("contact_edit") == patient_id:
             contact_editor(patient)
-            return
-        st.markdown(section_label_html("Contato") + kv_html([("Telefone", patient.get("phone") or "—"),
-                                                             ("Endereço", patient.get("address") or "—")]),
-                    unsafe_allow_html=True)
-        if st.button("Editar contato", key="contact_edit_open", type="tertiary"):
-            st.session_state["contact_edit"] = pid
-            st.rerun()
+        else:
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                field("Telefone", patient.get("phone") or "—")
+            with col2:
+                field("Endereço", patient.get("address") or "—")
+            if st.button("Editar contato", key="contact_edit_open"):
+                st.session_state["contact_edit"] = patient_id
+                st.rerun()
+    consultations_section(patient_id)
 
 
 def contact_editor(patient: dict) -> None:
@@ -746,9 +655,9 @@ def contact_editor(patient: dict) -> None:
                               placeholder="(00) 00000-0000", key=f"contact_{patient['id']}_phone")
         address = st.text_input("Endereço (opcional)", value=patient.get("address") or "", max_chars=300,
                                 key=f"contact_{patient['id']}_address")
-        with st.container(horizontal=True):
-            save = st.form_submit_button("Salvar", type="primary")
-            cancel = st.form_submit_button("Cancelar")
+        save_col, cancel_col, _ = st.columns([1, 1, 3])
+        save = save_col.form_submit_button("Salvar", type="primary")
+        cancel = cancel_col.form_submit_button("Cancelar")
     if cancel:
         close_contact_edit()
         st.rerun()
@@ -765,36 +674,77 @@ def contact_editor(patient: dict) -> None:
         st.rerun()
 
 
-def consultations_section(patient_id: int, history: list[dict] | None, error: ApiError | None) -> None:
-    """Consultation history as returned by the API (newest first); open consultations are emphasised and the
-    pharmacist's own open one says “Continuar”."""
-    with st.container(border=True, key="patient_consultations"):
-        count = f" ({len(history)})" if history else ""
-        st.markdown(section_label_html(f"Atendimentos{count}"), unsafe_allow_html=True)
-        if error is not None:
-            show_api_error(error)
+def start_consultation(patient_id: int) -> None:
+    """“Novo atendimento”: the API creates it (closing the patient's previous open consultation(s) itself)."""
+    forget_new_consultation_confirmations()
+    try:
+        consultation = api().create_consultation(patient_id)
+    except ApiError as exc:
+        if exc.status_code == 404:  # e.g. no longer in this pharmacist's establishment: drop the stale patient
+            close_patient()
+        show_api_error(exc)
+        return
+    st.session_state["flash"] = "Atendimento iniciado."
+    open_consultation(consultation["id"])
+    st.rerun()
+
+
+def colleague_open_consultation(history: list[dict] | None) -> bool:
+    """True when an open consultation of this patient was started by ANOTHER pharmacist (server ids, not names):
+    a new consultation would close it (backend rule), so the user is asked to confirm first."""
+    me = st.session_state["pharmacist"]["id"]
+    return any(not c["closed_at"] and c["pharmacist"]["id"] != me for c in history or [])
+
+
+def new_consultation_confirmation(patient_id: int) -> None:
+    st.warning(NEW_CONSULTATION_WARNING)
+    cancel_col, confirm_col, _ = st.columns([1, 2, 3])
+    if cancel_col.button("Cancelar", key=f"new_consultation_cancel_{patient_id}"):
+        forget_new_consultation_confirmations()
+        st.rerun()
+    if confirm_col.button("Iniciar novo atendimento", key=f"new_consultation_yes_{patient_id}", type="primary"):
+        start_consultation(patient_id)  # clears the confirmation before the single create request
+
+
+def consultations_section(patient_id: int) -> None:
+    with st.container(border=True):
+        try:
+            history = api().list_consultations(patient_id)
+        except ApiError as exc:
+            history = None
+            history_error = exc
+        else:
+            history_error = None
+        title, action = st.columns([4, 1])
+        title.subheader("Atendimentos")
+        confirming = st.session_state.get(new_consultation_confirm_key(patient_id), False)
+        if not confirming and action.button("Novo atendimento", key="new_consultation", type="primary", width="stretch"):
+            if colleague_open_consultation(history):
+                st.session_state[new_consultation_confirm_key(patient_id)] = True  # nothing is created yet
+                st.rerun()
+            start_consultation(patient_id)
+        if confirming:
+            new_consultation_confirmation(patient_id)
+        if history_error is not None:
+            show_api_error(history_error)
             return
         if not history:
-            empty_state("Nenhum atendimento registrado", "Use “Novo atendimento” para iniciar o primeiro.")
+            st.markdown('<p class="pt-muted">Nenhum atendimento registrado.</p>', unsafe_allow_html=True)
             return
-        me = st.session_state["pharmacist"]["id"]
         for consultation in history:
             pharmacist = consultation["pharmacist"]
-            is_open = not consultation["closed_at"]
-            own_open = is_open and pharmacist["id"] == me
-            with st.container(key=f"crow_open_{consultation['id']}" if is_open else f"crow_{consultation['id']}"):
-                left, right = st.columns([5, 1], vertical_alignment="center")
-                left.markdown(
-                    f"**{format_date(consultation['consultation_date'])}** · {md(pharmacist['full_name'])} · "
-                    f":gray[{md(pharmacist['crf'])}] {badge_md(consultation_status(consultation))}"
-                )
-                right.button(
-                    "Continuar" if own_open else "Abrir",
-                    key=f"open_consultation_{consultation['id']}",
-                    on_click=open_consultation,
-                    args=(consultation["id"],),
-                    width="stretch",
-                )
+            left, right = st.columns([5, 1])
+            state = "Encerrado" if consultation["closed_at"] else "Em andamento"
+            left.markdown(
+                f"**{format_date(consultation['consultation_date'])}** · "
+                f"{md(pharmacist['full_name'])} · {md(pharmacist['crf'])} · {state}"
+            )
+            right.button(
+                "Abrir",
+                key=f"open_consultation_{consultation['id']}",
+                on_click=open_consultation,
+                args=(consultation["id"],),
+            )
 
 
 SOAP_SECTIONS = [
@@ -844,8 +794,7 @@ def consultation_view(patient_id: int, consultation_id: int) -> None:
             "Há alterações não salvas no SOAP. Clique em “Salvar SOAP” para mantê-las, "
             "ou repita a ação (Voltar, menu ou Sair) para descartá-las."
         )
-    page_header(f"Atendimento de {format_date(consultation['consultation_date'])}", eyebrow="Atendimento",
-                status=consultation_status(consultation))
+    st.header(f"Atendimento de {format_date(consultation['consultation_date'])}")
     with st.container(border=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -974,7 +923,7 @@ def exams_section(patient_id: int, consultation: dict, editable: bool) -> None:
         if exams:
             st.dataframe(exam_table_rows(exams), hide_index=True, width="stretch")
         else:
-            empty_state("Nenhum resultado registrado")
+            st.markdown('<p class="pt-muted">Nenhum resultado registrado.</p>', unsafe_allow_html=True)
         if not editable:
             return
 
@@ -1015,7 +964,7 @@ def previous_exams_section(patient_id: int, cid: int) -> None:
     with st.container(border=True):
         st.subheader("Exames anteriores")
         if not groups:
-            empty_state("Nenhum exame em atendimentos anteriores")
+            st.markdown('<p class="pt-muted">Nenhum exame em atendimentos anteriores.</p>', unsafe_allow_html=True)
             return
         st.caption("Somente leitura: resultados registrados em atendimentos anteriores deste paciente.")
         for index, group in enumerate(groups):
@@ -1204,7 +1153,7 @@ def documents_section(patient_id: int, patient: dict, consultation: dict, editab
                     right.caption("Não disponível")
         if not editable:
             if not issued:
-                empty_state("Nenhum documento emitido")
+                st.markdown('<p class="pt-muted">Nenhum documento emitido.</p>', unsafe_allow_html=True)
             return
 
         kind = st.radio(
@@ -1380,6 +1329,12 @@ def qc_datetime(iso: str | None) -> str:
     return format_timestamp(iso).replace(" ", " - ", 1) if iso else "—"
 
 
+def qc_state_label(record: dict) -> str:
+    if record.get("cancelled_at"):
+        return "Cancelado"
+    return "Finalizado" if record["finalized_at"] else "Em preenchimento"
+
+
 def qc_payload(record: dict) -> dict:
     """The record's saved content in the form/request shape."""
     payload = {"control_type": record["control_type"]}
@@ -1415,7 +1370,7 @@ def close_quality_control() -> None:
 
 
 def quality_control_view() -> None:
-    page_header("Controle de Qualidade", eyebrow="Qualidade")
+    st.header("Controle de Qualidade")
     if flash := st.session_state.pop("flash", None):
         st.success(flash)
     if "qc_id" in st.session_state:
@@ -1447,14 +1402,15 @@ def qc_history() -> None:
         show_api_error(exc)
         return
     if not records:
-        empty_state("Nenhum registro de controle de qualidade", "Use “Novo registro” para iniciar um CIQ ou CEQ.")
+        st.markdown('<p class="pt-muted">Nenhum registro de controle de qualidade.</p>', unsafe_allow_html=True)
         return
     for record in records:
         left, right = st.columns([5, 1])
+        status = QC_STATUS_LABELS.get(record["evaluation_status"], "Status não informado")
         left.markdown(
             f"**{qc_datetime(record['execution_at'])}** · {record['control_type']} · "
-            f"{md(record['exam_analyte'] or '—')} · {badge_md(qc_evaluation_status(record))} · "
-            f"{md(record['responsible_name'])} · {badge_md(qc_lifecycle_status(record))}"
+            f"{md(record['exam_analyte'] or '—')} · {status} · {md(record['responsible_name'])} · "
+            f"{qc_state_label(record)}"
         )
         right.button("Abrir", key=f"qc_open_{record['id']}", on_click=open_quality_control, args=(record["id"],))
 
@@ -1476,8 +1432,7 @@ def qc_record_view(rid: int) -> None:
         with col2:
             field("Responsável", f"{record['responsible_name']} · {record['responsible_crf']}")
         with col3:
-            st.markdown('<div class="pt-label">Situação</div>', unsafe_allow_html=True)
-            status_badge(qc_lifecycle_status(record))
+            field("Situação", qc_state_label(record))
     if not editable:
         if record.get("cancelled_at"):
             st.warning(QC_CANCELLED_NOTICE)
@@ -1679,6 +1634,8 @@ if "token" not in st.session_state:
 else:
     refresh_identity()
     sidebar()
+    st.markdown(f"## {APP_NAME}")
+    st.caption(ESTABLISHMENT)
     if st.session_state.pop("establishment_changed", False):
         st.warning(ESTABLISHMENT_CHANGED)
     user = st.session_state["pharmacist"]
