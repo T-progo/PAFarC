@@ -225,7 +225,7 @@ def install_app_metadata() -> None:
         "function add(tag, attrs) {var e = document.createElement(tag);"
         "for (var k in attrs) e.setAttribute(k, attrs[k]); h.appendChild(e);}"
         "add('link', {rel: 'manifest', href: 'app/static/manifest.json'});"
-        "add('meta', {name: 'theme-color', content: '#121417'});"
+        "add('meta', {name: 'theme-color', content: '#2B2622'});"
         "add('meta', {name: 'mobile-web-app-capable', content: 'yes'});"
         "add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});"
         "add('meta', {name: 'apple-mobile-web-app-title', content: 'PharmaTech'});"

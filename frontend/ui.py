@@ -17,10 +17,10 @@ import streamlit as st
 
 CSS = """
 :root {
-  --bg: #121417; --surface: #181B1F; --surface-nested: #20252B; --surface-selected: #1F2A36;
-  --border: #2E343B; --separator: #262B31;
-  --text: #E6E8EB; --text-muted: #A1A8B0; --text-subtle: #8B939C; --accent: #6CA6DE; --on-accent: #0E1013;
-  --success: #4FBF85; --warning: #E3A443; --danger: #EC7A6C;
+  --bg: #2B2622; --surface: #312B26; --surface-nested: #3A332D; --surface-selected: #463C33;
+  --border: #554A40; --separator: #4A4138;
+  --text: #F3ECE2; --text-muted: #BBAE9E; --text-subtle: #AA9C8B; --accent: #D4B98C; --on-accent: #2B2622;
+  --success: #9CC8A0; --warning: #E3B26A; --danger: #E39A88; --danger-border: #9E4A3A;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
   --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px;
 }
@@ -123,7 +123,7 @@ CSS = """
 [class*="st-key-prow_"] p, [class*="st-key-crow_"] p { margin-bottom: 0; }
 
 /* "Cancelar lançamento": secondary button with a muted danger outline. */
-.st-key-qc_cancel_actions button, .st-key-qc_cancel_confirm_actions button { border-color: var(--danger); }
+.st-key-qc_cancel_actions button, .st-key-qc_cancel_confirm_actions button { border-color: var(--danger-border); }
 .st-key-qc_cancel_actions button p, .st-key-qc_cancel_confirm_actions button p { color: var(--danger); }
 """
 
